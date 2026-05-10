@@ -305,8 +305,17 @@ def find_latest_inbound_for_session(session_id: str) -> dict[str, Any] | None:
 
     Queries the gc events stream (HTTP, not SSE — single shot snapshot).
     Returns the parsed event dict, or None if no match found.
+
+    Uses `since=2h` to bound the query window: the endpoint returns
+    events oldest-first by default, so on busy cities (event log >700k
+    seqs) `limit=50` would return only ancient history and a recent
+    extmsg.inbound at the tail would never appear in the response.
+    The time bound is the primary filter; limit=500 is a defensive cap.
+    Without this, `gc slack reply-current --thread-current` bails with
+    'no inbound event...' and the agent falls back to a non-threaded
+    publish-to-channel.
     """
-    url = f"{gc_api_base()}/v0/city/{gc_city_name()}/events?type=extmsg.inbound&limit=50"
+    url = f"{gc_api_base()}/v0/city/{gc_city_name()}/events?type=extmsg.inbound&since=2h&limit=500"
     raw = _request("GET", url, csrf=False).get("items", [])
     matches = [e for e in raw if (e.get("payload") or {}).get("target_session") == session_id]
     if not matches:
