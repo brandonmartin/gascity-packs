@@ -14,3 +14,7 @@
 # /home/ds/gascity-packs/.beads/config.yaml). Keep it out of repo history —
 # beads issues canonical store is the Dolt DB, not this file.
 /issues.jsonl
+
+# Python test/runtime artifacts
+__pycache__/
+*.py[cod]
