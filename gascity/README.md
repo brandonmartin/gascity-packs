@@ -1,4 +1,4 @@
-# GC Planning Skills
+# Gas City Planning Skills
 
 This pack provides three manual planning skills and one implementation formula
 for Gas City work:
@@ -10,19 +10,19 @@ for Gas City work:
   runs gap-analysis and review Ralph loops, commits the final state, and can
   optionally open a PR.
 
-Import it with the `gc` binding:
+Import it with the `gascity` binding:
 
 ```toml
-[imports.gc]
-source = "../gascity-packs/gc"
+[imports.gascity]
+source = "../gascity-packs/gascity"
 ```
 
 Run the skills manually in order:
 
 ```text
-Use skill gc.plan
-Use skill gc.design
-Use skill gc.decompose
+Use skill gascity.plan
+Use skill gascity.design
+Use skill gascity.decompose
 ```
 
 Then launch implementation from the target rig:

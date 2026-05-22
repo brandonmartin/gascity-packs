@@ -12,8 +12,8 @@ from urllib.parse import urlparse
 
 
 PACK_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)?$")
-REQUIRED_WAVE_1 = {"core", "gastown", "maintenance"}
-FORBIDDEN_WAVE_1 = {"bd", "dolt"}
+REQUIRED_WAVE_1 = {"discord", "gascity", "gastown", "github-intake", "slack"}
+FORBIDDEN_WAVE_1 = {"bd", "core", "dolt", "maintenance"}
 
 
 def validate(path: Path) -> list[str]:
@@ -48,6 +48,24 @@ def validate(path: Path) -> list[str]:
         parsed = urlparse(source)
         if parsed.scheme != "https" or not parsed.netloc:
             errors.append(f"{label}: source must be an HTTPS git locator")
+            continue
+
+        match = re.search(r"\.git//([^#]+)", source)
+        if match:
+            pack_path = match.group(1)
+            pack_toml = path.parent / pack_path / "pack.toml"
+            if not pack_toml.exists():
+                errors.append(f"{label}: source path {pack_path!r} does not contain pack.toml")
+                continue
+            try:
+                with pack_toml.open("rb") as handle:
+                    pack_data = tomllib.load(handle)
+            except tomllib.TOMLDecodeError as exc:
+                errors.append(f"{label}: source path {pack_path!r} pack.toml is invalid: {exc}")
+                continue
+            actual_name = pack_data.get("pack", {}).get("name", "")
+            if actual_name != name:
+                errors.append(f"{label}: registry name does not match {pack_path}/pack.toml name {actual_name!r}")
 
     missing = REQUIRED_WAVE_1 - seen
     if missing:
