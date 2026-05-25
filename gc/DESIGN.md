@@ -1,6 +1,6 @@
 ---
 title: GC Workflow Pack V0
-status: draft
+status: Implemented V0
 created_at: 2026-05-25
 updated_at: 2026-05-25
 sources:
