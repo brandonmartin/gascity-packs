@@ -9,21 +9,34 @@ The molecule root bead IS the control bead — all run state is stored in its
 notes via `bd update <root-id> --notes "key: value"`. No separate tracking
 bead needed.
 
-**Polecat publish authority (hard rule):** The polecat NEVER runs `gh pr merge`.
-The `finalize` step resolves the merge path, records `merge_ready: true` +
-`merge_command` in the root bead, mails mayor, and continues to the `complete`
-step. Mayor performs the merge asynchronously per the per-action approval
-rule, independent of the polecat's lifecycle. This applies to all four paths
-(A/B/C/D).
+**Polecat publish authority (hard rule):** The polecat NEVER runs `gh pr merge`,
+`git push`, `gh pr create`, or `gh pr comment` on paths B/C/D. The `finalize`
+step resolves the merge path, prepares all local artifacts (squash, rebase,
+branch, cherry-pick, synthesis body), then for paths B/C/D records a
+*branch-ready handoff bundle* (`status: ready-for-publish` plus the resolved
+publish + comment + merge commands) in the root bead, mails mayor, and continues
+to the `complete` step. Mayor performs publish (push + optionally
+`gh pr create`), posts the synthesis comment (`gh pr comment`), waits for CI,
+and merges asynchronously per the per-action approval rule, independent of the
+polecat's lifecycle. Path A is the contributor's own PR branch round-trip — the
+polecat still pushes the rebased contributor commits there (no new artifact
+under maintainer identity), posts the synthesis comment on the contributor's
+existing PR itself, and only hands off `gh pr merge` to mayor.
 
 ## Contract
 
 1. Caller slings with `--var pr=<url-or-number>` (and optionally `--var skip_gemini=true`)
 2. Polecat reads steps, executes each in order
 3. After review, human-gate blocks until maintainer closes it
-4. Polecat resumes finalize → resolves merge path → records merge_ready + merge_command in root bead → mails mayor
-5. Polecat continues to the `complete` step (cleanup) and exits naturally
-6. Mayor reads the root bead and performs the merge out-of-band, per per-action approval
+4. Polecat resumes finalize → resolves merge path → prepares all local artifacts
+5. Path A: polecat pushes rebased contributor commits, posts synthesis, waits CI,
+   records merge_command, mails mayor → `complete`
+6. Paths B/C/D: polecat records branch-ready handoff bundle (push_command +
+   optional pr_create_command + synthesis body + merge_command) in root bead,
+   mails mayor → `complete`. Polecat does NOT push, create, comment, wait CI,
+   or merge on B/C/D.
+7. Mayor reads the root bead and performs publish + downstream actions
+   out-of-band, per the per-action approval rule
 
 ## Variables
 
@@ -299,15 +312,26 @@ iteration (via `bd mol current`) or when nudged.
 
 [[steps]]
 id = "finalize"
-title = "Push, post synthesis, hand merge to mayor"
+title = "Resolve path, prepare artifacts, hand publish + merge to mayor"
 needs = ["human-gate"]
 description = """
-Determine the merge path, push, post synthesis comment, wait for CI, then
-record the resolved merge command + `merge_ready: true` in the root bead and
-mail mayor. The polecat then continues to the `complete` step (cleanup) and
-exits naturally; mayor performs the actual merge out-of-band per the
-per-action approval rule.
-**Polecats NEVER run `gh pr merge`** — that is mayor's per-action publish step.
+Determine the merge path, then:
+- **Path A** (contributor PR, no maintainer changes): push the rebased
+  contributor branch, post synthesis comment, wait for CI, record the merge
+  command + `merge_ready: true` in root bead, mail mayor, continue to
+  `complete`. Mayor performs the merge asynchronously.
+- **Paths B/C/D** (involve maintainer-authored content publishing to upstream):
+  prepare all local artifacts (squash, branch, cherry-pick, synthesis body),
+  record a *branch-ready handoff bundle* (status + push_command + optional
+  pr_create_command + synthesis body + merge_command) in the root bead, mail
+  mayor, continue to `complete`. Mayor performs publish + downstream actions
+  asynchronously.
+
+**Polecats NEVER run `gh pr merge`** on any path.
+**Polecats NEVER run `git push`, `gh pr create`, or `gh pr comment` on paths
+B/C/D** — those publish maintainer-authored content (push of new history,
+new PRs, or synthesis comments under maintainer identity) and require
+per-action mayor approval.
 
 **1. Read root bead notes:**
 ```bash
@@ -453,34 +477,71 @@ git checkout -B <branch-name> HEAD
 
 If any fails: `git checkout -B <branch> $OLD_TIP` and **STOP**.
 
-**B.2: Push.**
+**B.2: Hand off branch-ready bundle to mayor.**
+**Polecats NEVER run `git push` or `gh pr merge` on Path B.** B.1 already
+rewrote the contributor branch locally with maintainer changes squashed in;
+publishing that rewrite under maintainer identity is mayor's per-action
+publish step.
+
+Resolve the push command. `REBASE_STATUS` is the shell variable carrying the
+`rebase_status` field extracted from root bead notes in step 1 (see also
+A.3, which reads the same field):
 ```bash
-if [ $CONTRIBUTOR_COUNT -gt 1 ] || [ "$REBASE_STATUS" != "not_needed" ]; then
-    git push --force-with-lease
+REBASE_STATUS=$(bd_notes_get "$ROOT_ID" rebase_status)   # extracted in step 1
+if [ "$CONTRIBUTOR_COUNT" -gt 1 ] || [ "$REBASE_STATUS" != "not_needed" ]; then
+    PUSH_CMD="git push --force-with-lease"
 else
-    git push
+    PUSH_CMD="git push"
 fi
 ```
 
-**B.3: Post synthesis comment** (Path B template — includes Initial Review,
-Maintainer Changes, Final Review Status sections).
-
-**B.4: Wait for CI** (same as Path A).
-
-**B.5: Hand off the merge to mayor.**
-**Polecats NEVER run `gh pr merge`.** Record the resolved merge command +
-readiness flag in the root bead, mail mayor, and proceed to B.6 — do NOT
-run the merge yourself.
-
+Compose the Path B synthesis comment body (template — includes Initial Review,
+Maintainer Changes, Final Review Status sections) into a file:
 ```bash
-bd update $ROOT_ID --notes "<notes with merge_path: B, merge_ready: true, status: ready-for-merge, merge_command: 'gh pr merge <number> --merge'>"
+SYNTH_PATH="<review_run_dir>/outputs/comment-path-b.md"
+# write the rendered comment body to $SYNTH_PATH
 ```
 
-Then mail mayor with the same handoff pattern as A.4 (substitute Path B /
-merge command). The polecat continues to B.6 (cleanup) and `complete`.
-Mayor performs the merge asynchronously.
+Resolve concrete handoff values and record the full branch-ready handoff
+bundle on the root bead. Use double-quoted command strings so `$SYNTH_PATH`
+and other shell variables expand at write time — the notes must contain
+fully resolved, copy-pasteable commands for mayor:
+```bash
+HEAD_SHA=$(git rev-parse HEAD)
+POST_SYNTH_CMD="gh pr comment <number> --body-file $SYNTH_PATH"
+CI_WAIT_CMD="gh pr checks <number> --watch"
+MERGE_CMD="gh pr merge <number> --merge"
 
-**B.6: Cleanup** (same as Path A).
+bd update "$ROOT_ID" --notes "<notes with
+  merge_path: B,
+  status: ready-for-publish,
+  branch: <head_ref>,
+  head_sha: $HEAD_SHA,
+  push_command: $PUSH_CMD,
+  synthesis_path: $SYNTH_PATH,
+  post_synthesis_command: $POST_SYNTH_CMD,
+  ci_check_command: $CI_WAIT_CMD,
+  merge_command: $MERGE_CMD>"
+```
+
+Then mail mayor (variable values shown for the example; substitute actual
+resolved values in the body):
+```
+[adopt-pr] Path B branch-ready — squash + maintainer-rebase done locally; ready for publish.
+[adopt-pr]   PR:                   <number>
+[adopt-pr]   Branch / SHA:         <head_ref> @ $HEAD_SHA
+[adopt-pr]   Push command:         $PUSH_CMD
+[adopt-pr]   Post-synthesis cmd:   $POST_SYNTH_CMD
+[adopt-pr]   CI wait cmd:          $CI_WAIT_CMD
+[adopt-pr]   Merge command:        $MERGE_CMD
+[adopt-pr]   Root bead:            $ROOT_ID
+```
+
+The polecat then proceeds to B.3 (cleanup) and `complete`. Mayor performs
+push → post synthesis → wait CI → merge asynchronously per the per-action
+approval rule, independent of the polecat's lifecycle.
+
+**B.3: Cleanup** (same as Path A.5).
 
 ---
 
@@ -489,41 +550,157 @@ Mayor performs the merge asynchronously.
 **C.1:** Squash contributor commits (same as B.1).
 **C.2:** Create new branch from upstream main:
 ```bash
-git checkout -b fix/<head_ref>-complete refs/adopt-pr/upstream-base
+NEW_BRANCH="fix/<head_ref>-complete"
+git checkout -b "$NEW_BRANCH" refs/adopt-pr/upstream-base
 ```
 **C.3:** Cherry-pick contributor commit + maintainer commits.
-**C.4:** Push: `git push -u origin fix/<head_ref>-complete`
-**C.5:** Create PR against upstream:
+
+**C.4: Hand off branch-ready bundle to mayor.**
+**Polecats NEVER run `git push`, `gh pr create`, or `gh pr merge` on Path C.**
+C.1–C.3 prepared the new branch locally under maintainer identity; publishing
+that branch as a new upstream PR is mayor's per-action publish step.
+
+Compose the Path C synthesis comment body (credits contributor) and the
+original-PR thank-you/close comment into files:
 ```bash
-gh pr create --repo <owner>/<repo> --base <baseRefName> \
-  --head <origin-owner>:fix/<head_ref>-complete \
-  --title "<pr_title>" --body "<body referencing original PR>"
+SYNTH_PATH="<review_run_dir>/outputs/comment-path-c.md"
+CLOSE_PATH="<review_run_dir>/outputs/comment-path-c-original-close.md"
+# write the rendered bodies
 ```
-**C.6:** Post synthesis on new PR (Path C template — credits contributor).
-**C.7:** Wait for CI on new PR.
-**C.8:** Hand off merge of new PR to mayor. **Polecats NEVER run `gh pr merge`.**
-Record `merge_ready: true, status: ready-for-merge, merge_command: 'gh pr merge <new-number> --repo <owner>/<repo> --merge'`
-in root bead, mail mayor, and proceed to C.9 — do NOT run the merge yourself.
-Mayor performs it asynchronously.
-**C.9:** Close original PR with warm thank-you comment.
-**C.10:** Cleanup.
+
+Resolve concrete handoff values and record the full branch-ready handoff
+bundle on the root bead. Build each command in a shell variable first so the
+recorded notes contain fully resolved, copy-pasteable commands for mayor
+(no unexpanded `$NEW_BRANCH` / `$SYNTH_PATH` / etc. in the recorded text):
+```bash
+HEAD_SHA=$(git rev-parse HEAD)
+REPO_FULL="<owner>/<repo>"
+BASE_REF="<baseRefName>"
+ORIGIN_OWNER="<origin-owner>"
+PR_TITLE="<pr_title>"
+PR_BODY="<body referencing original PR>"
+NEW_NUMBER_PLACEHOLDER="<new-number>"   # mayor substitutes after gh pr create
+
+PUSH_CMD="git push -u origin $NEW_BRANCH"
+PR_CREATE_CMD="gh pr create --repo $REPO_FULL --base $BASE_REF --head $ORIGIN_OWNER:$NEW_BRANCH --title \"$PR_TITLE\" --body \"$PR_BODY\""
+POST_SYNTH_CMD="gh pr comment $NEW_NUMBER_PLACEHOLDER --body-file $SYNTH_PATH"
+CI_WAIT_CMD="gh pr checks $NEW_NUMBER_PLACEHOLDER --watch"
+MERGE_CMD="gh pr merge $NEW_NUMBER_PLACEHOLDER --repo $REPO_FULL --merge"
+CLOSE_ORIG_CMD="gh pr comment <number> --body-file $CLOSE_PATH && gh pr close <number>"
+
+bd update "$ROOT_ID" --notes "<notes with
+  merge_path: C,
+  status: ready-for-publish,
+  branch: $NEW_BRANCH,
+  head_sha: $HEAD_SHA,
+  push_command: $PUSH_CMD,
+  pr_create_command: $PR_CREATE_CMD,
+  synthesis_path: $SYNTH_PATH,
+  post_synthesis_command: $POST_SYNTH_CMD,
+  ci_check_command: $CI_WAIT_CMD,
+  merge_command: $MERGE_CMD,
+  close_original_comment_path: $CLOSE_PATH,
+  close_original_command: $CLOSE_ORIG_CMD>"
+```
+
+Then mail mayor:
+```
+[adopt-pr] Path C branch-ready — local branch prepared with maintainer + contributor commits; ready for publish.
+[adopt-pr]   New branch / SHA:     $NEW_BRANCH @ $HEAD_SHA
+[adopt-pr]   Push command:         $PUSH_CMD
+[adopt-pr]   PR-create command:    $PR_CREATE_CMD
+[adopt-pr]   Post-synthesis cmd:   $POST_SYNTH_CMD
+[adopt-pr]   CI wait cmd:          $CI_WAIT_CMD
+[adopt-pr]   Merge command:        $MERGE_CMD
+[adopt-pr]   Close-original cmds:  $CLOSE_ORIG_CMD
+[adopt-pr]   Original PR:          <number>
+[adopt-pr]   Root bead:            $ROOT_ID
+```
+
+The polecat then proceeds to C.5 (cleanup) and `complete`. Mayor performs
+push → create PR → post synthesis → wait CI → merge → close original
+asynchronously per the per-action approval rule.
+
+**C.5:** Cleanup (same as Path A.5).
 
 ---
 
 ### Path D: Follow-up PR (original already merged)
 
-**D.1:** Fetch latest upstream, create branch `fix/<head_ref>-review-fixups`.
+**D.1:** Fetch latest upstream, create branch:
+```bash
+FOLLOWUP_BRANCH="fix/<head_ref>-review-fixups"
+git checkout -b "$FOLLOWUP_BRANCH" <upstream-base>
+```
 **D.2:** Cherry-pick maintainer fixup commits only.
-**D.3:** Push: `git push -u origin fix/<head_ref>-review-fixups`
-**D.4:** Create follow-up PR referencing original.
-**D.5:** Post synthesis on follow-up PR (Path D template).
-**D.6:** Wait for CI.
-**D.7:** Hand off merge of follow-up to mayor. **Polecats NEVER run `gh pr merge`.**
-Record `merge_ready: true, status: ready-for-merge, merge_command: 'gh pr merge <followup-number> --squash'`
-in root bead, mail mayor, and proceed to D.8 — do NOT run the merge yourself.
-Mayor performs it asynchronously.
-**D.8:** Comment on original PR linking to follow-up.
-**D.9:** Cleanup.
+
+**D.3: Hand off branch-ready bundle to mayor.**
+**Polecats NEVER run `git push`, `gh pr create`, or `gh pr merge` on Path D.**
+D.1–D.2 prepared the follow-up branch locally under maintainer identity;
+publishing it as a new upstream PR is mayor's per-action publish step.
+
+Compose the Path D synthesis comment body and the original-PR link-back
+comment into files:
+```bash
+SYNTH_PATH="<review_run_dir>/outputs/comment-path-d.md"
+LINK_PATH="<review_run_dir>/outputs/comment-path-d-original-link.md"
+# write the rendered bodies
+```
+
+Resolve concrete handoff values and record the full branch-ready handoff
+bundle on the root bead. Build each command in a shell variable first so the
+recorded notes contain fully resolved, copy-pasteable commands for mayor
+(no unexpanded `$FOLLOWUP_BRANCH` / `$SYNTH_PATH` / etc. in the recorded text):
+```bash
+HEAD_SHA=$(git rev-parse HEAD)
+REPO_FULL="<owner>/<repo>"
+BASE_REF="<baseRefName>"
+ORIGIN_OWNER="<origin-owner>"
+FOLLOWUP_TITLE="<followup-title>"
+FOLLOWUP_BODY="<body linking to original PR>"
+FOLLOWUP_NUMBER_PLACEHOLDER="<followup-number>"   # mayor substitutes after gh pr create
+
+PUSH_CMD="git push -u origin $FOLLOWUP_BRANCH"
+PR_CREATE_CMD="gh pr create --repo $REPO_FULL --base $BASE_REF --head $ORIGIN_OWNER:$FOLLOWUP_BRANCH --title \"$FOLLOWUP_TITLE\" --body \"$FOLLOWUP_BODY\""
+POST_SYNTH_CMD="gh pr comment $FOLLOWUP_NUMBER_PLACEHOLDER --body-file $SYNTH_PATH"
+CI_WAIT_CMD="gh pr checks $FOLLOWUP_NUMBER_PLACEHOLDER --watch"
+MERGE_CMD="gh pr merge $FOLLOWUP_NUMBER_PLACEHOLDER --squash"
+COMMENT_ORIG_CMD="gh pr comment <number> --body-file $LINK_PATH"
+
+bd update "$ROOT_ID" --notes "<notes with
+  merge_path: D,
+  status: ready-for-publish,
+  branch: $FOLLOWUP_BRANCH,
+  head_sha: $HEAD_SHA,
+  push_command: $PUSH_CMD,
+  pr_create_command: $PR_CREATE_CMD,
+  synthesis_path: $SYNTH_PATH,
+  post_synthesis_command: $POST_SYNTH_CMD,
+  ci_check_command: $CI_WAIT_CMD,
+  merge_command: $MERGE_CMD,
+  original_link_comment_path: $LINK_PATH,
+  comment_original_command: $COMMENT_ORIG_CMD>"
+```
+
+Then mail mayor:
+```
+[adopt-pr] Path D branch-ready — follow-up branch prepared with maintainer fixups; ready for publish.
+[adopt-pr]   Follow-up branch:     $FOLLOWUP_BRANCH @ $HEAD_SHA
+[adopt-pr]   Push command:         $PUSH_CMD
+[adopt-pr]   PR-create command:    $PR_CREATE_CMD
+[adopt-pr]   Post-synthesis cmd:   $POST_SYNTH_CMD
+[adopt-pr]   CI wait cmd:          $CI_WAIT_CMD
+[adopt-pr]   Merge command:        $MERGE_CMD
+[adopt-pr]   Comment-original cmd: $COMMENT_ORIG_CMD
+[adopt-pr]   Original PR:          <number>
+[adopt-pr]   Root bead:            $ROOT_ID
+```
+
+The polecat then proceeds to D.4 (cleanup) and `complete`. Mayor performs
+push → create follow-up PR → post synthesis → wait CI → merge → comment on
+original asynchronously per the per-action approval rule.
+
+**D.4:** Cleanup (same as Path A.5).
 
 ---
 
@@ -534,11 +711,18 @@ Mayor performs it asynchronously.
 - **Squash guardrails mandatory** — all four checks must pass before pushing rewritten history
 - **All reviews use canonical upstream base** — fetched from the real upstream URL, not origin
 
-**Exit criteria:** Synthesis posted, CI green, merge path resolved,
-`merge_ready: true` + `merge_command` recorded in root bead notes, mayor
-mailed. The polecat then proceeds to the `complete` step. The polecat never
-invokes `gh pr merge` itself — mayor performs the merge asynchronously per
-the per-action approval rule, independent of the polecat's lifecycle."""
+**Exit criteria:** Merge path resolved. Then:
+- **Path A:** synthesis posted, CI green, `merge_ready: true` + `merge_command`
+  recorded in root bead notes, mayor mailed. Polecat proceeds to `complete`.
+- **Paths B/C/D:** local artifacts prepared (squash / branch / cherry-pick /
+  synthesis body), `status: ready-for-publish` + full publish-and-merge bundle
+  recorded in root bead notes, mayor mailed. Polecat proceeds to `complete`
+  without pushing, creating PRs, posting comments, waiting on CI, or merging.
+
+The polecat never invokes `gh pr merge` on any path, and never invokes
+`git push` or `gh pr create` on paths B/C/D. Mayor performs publish and
+downstream actions asynchronously per the per-action approval rule,
+independent of the polecat's lifecycle."""
 
 [[steps]]
 id = "complete"
