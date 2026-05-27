@@ -9,8 +9,8 @@ source_kind = "git"
   [[pack.release]]
   version = "0.1.0"
   ref = "codex/public-builtins-wave1"
-  commit = "bc2c4ed4db9ba65d04bb37c14616eef6104c2945"
-  hash = "sha256:4a75a5ad74a5f085e070b3e6362e14bde5cabec9a89bb6ff8d6b24068a2a02db"
+  commit = "d3617d1319a1206ac85f69ba024ec395c49c6f4b"
+  hash = "sha256:481e800b2955956b4fc4856257ec56ae1b668da2d84e8543816917ac9dc8e7c7"
   description = "Initial staged Gas City planning pack release."
 
 [[pack]]
@@ -22,8 +22,8 @@ source_kind = "git"
   [[pack.release]]
   version = "0.1.0"
   ref = "codex/public-builtins-wave1"
-  commit = "bc2c4ed4db9ba65d04bb37c14616eef6104c2945"
-  hash = "sha256:af6e6b4e9b9685c6913059e2451037482275119fe8661b7d2174125869edd6e1"
+  commit = "d3617d1319a1206ac85f69ba024ec395c49c6f4b"
+  hash = "sha256:e8d987c8bea7d89eb3c5751a360b92a6c847f95fc5e5447378927e90eb3b501b"
   description = "Initial staged Gas Town workflow pack release."
 
 [[pack]]
@@ -35,8 +35,8 @@ source_kind = "git"
   [[pack.release]]
   version = "0.1.0"
   ref = "codex/public-builtins-wave1"
-  commit = "bc2c4ed4db9ba65d04bb37c14616eef6104c2945"
-  hash = "sha256:0158a7e7dcd8ecf98be3b8b56af45d9ce9f84171e9789059820e503fa97a189c"
+  commit = "d3617d1319a1206ac85f69ba024ec395c49c6f4b"
+  hash = "sha256:4e3acdaf3171e8a53327ebcee9f5b9c61d191c5791e413ff61a76b457ef96394"
   description = "Initial staged Discord pack release."
 
 [[pack]]
@@ -48,8 +48,8 @@ source_kind = "git"
   [[pack.release]]
   version = "0.1.0"
   ref = "codex/public-builtins-wave1"
-  commit = "bc2c4ed4db9ba65d04bb37c14616eef6104c2945"
-  hash = "sha256:06f6232bccb50e44bf56b73fb8ca527e54960d284fe627a2812e8ac0513eb526"
+  commit = "d3617d1319a1206ac85f69ba024ec395c49c6f4b"
+  hash = "sha256:5ba4e2277e1e1b434b278067704d0d977dd8f18aee496a21feab4218ee99995e"
   description = "Initial staged GitHub intake pack release."
 
 [[pack]]
@@ -61,6 +61,6 @@ source_kind = "git"
   [[pack.release]]
   version = "0.0.1"
   ref = "codex/public-builtins-wave1"
-  commit = "bc2c4ed4db9ba65d04bb37c14616eef6104c2945"
-  hash = "sha256:1ab2be24ddfcd5656a90eaa4b8ac49ee21cdc8e0e9b8113644c959c4a8014cb8"
+  commit = "d3617d1319a1206ac85f69ba024ec395c49c6f4b"
+  hash = "sha256:0d32d8da6ad57c632d4f54008bdd1bb8b822c493a709676b3d1761a5ef389387"
   description = "Initial staged Slack pack release."
