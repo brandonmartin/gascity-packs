@@ -8,10 +8,10 @@ source_kind = "git"
 
   [[pack.release]]
   version = "0.1.0"
-  ref = "codex/public-builtins-wave1"
+  ref = "main"
   commit = "d3617d1319a1206ac85f69ba024ec395c49c6f4b"
   hash = "sha256:481e800b2955956b4fc4856257ec56ae1b668da2d84e8543816917ac9dc8e7c7"
-  description = "Initial staged Gas City planning pack release."
+  description = "Initial Gas City planning pack release."
 
 [[pack]]
 name = "gastown"
@@ -21,10 +21,10 @@ source_kind = "git"
 
   [[pack.release]]
   version = "0.1.0"
-  ref = "codex/public-builtins-wave1"
+  ref = "main"
   commit = "d3617d1319a1206ac85f69ba024ec395c49c6f4b"
   hash = "sha256:e8d987c8bea7d89eb3c5751a360b92a6c847f95fc5e5447378927e90eb3b501b"
-  description = "Initial staged Gas Town workflow pack release."
+  description = "Initial Gas Town workflow pack release."
 
 [[pack]]
 name = "discord"
@@ -34,10 +34,10 @@ source_kind = "git"
 
   [[pack.release]]
   version = "0.1.0"
-  ref = "codex/public-builtins-wave1"
+  ref = "main"
   commit = "d3617d1319a1206ac85f69ba024ec395c49c6f4b"
   hash = "sha256:4e3acdaf3171e8a53327ebcee9f5b9c61d191c5791e413ff61a76b457ef96394"
-  description = "Initial staged Discord pack release."
+  description = "Initial Discord pack release."
 
 [[pack]]
 name = "github-intake"
@@ -47,10 +47,10 @@ source_kind = "git"
 
   [[pack.release]]
   version = "0.1.0"
-  ref = "codex/public-builtins-wave1"
+  ref = "main"
   commit = "d3617d1319a1206ac85f69ba024ec395c49c6f4b"
   hash = "sha256:5ba4e2277e1e1b434b278067704d0d977dd8f18aee496a21feab4218ee99995e"
-  description = "Initial staged GitHub intake pack release."
+  description = "Initial GitHub intake pack release."
 
 [[pack]]
 name = "slack"
@@ -60,7 +60,7 @@ source_kind = "git"
 
   [[pack.release]]
   version = "0.0.1"
-  ref = "codex/public-builtins-wave1"
+  ref = "main"
   commit = "d3617d1319a1206ac85f69ba024ec395c49c6f4b"
   hash = "sha256:0d32d8da6ad57c632d4f54008bdd1bb8b822c493a709676b3d1761a5ef389387"
-  description = "Initial staged Slack pack release."
+  description = "Initial Slack pack release."
