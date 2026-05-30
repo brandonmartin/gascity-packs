@@ -1,5 +1,5 @@
 description = """
-Adopt-PR workflow — 6 steps from intake through merge-handoff.
+Adopt-PR workflow — 5 steps from intake through merge-handoff.
 
 Sling a contributor PR to a polecat for review. The polecat follows each step
 in order; a human gate after review blocks until the maintainer closes it
@@ -14,8 +14,8 @@ bead needed.
 step resolves the merge path, prepares all local artifacts (squash, rebase,
 branch, cherry-pick, synthesis body), then for paths B/C/D records a
 *branch-ready handoff bundle* (`status: ready-for-publish` plus the resolved
-publish + comment + merge commands) in the root bead, mails mayor, and continues
-to the `complete` step. Mayor performs publish (push + optionally
+publish + comment + merge commands) in the root bead, and mails mayor. The
+finalize cleanup ends the chain. Mayor performs publish (push + optionally
 `gh pr create`), posts the synthesis comment (`gh pr comment`), waits for CI,
 and merges asynchronously per the per-action approval rule, independent of the
 polecat's lifecycle. Path A is the contributor's own PR branch round-trip — the
@@ -30,11 +30,11 @@ existing PR itself, and only hands off `gh pr merge` to mayor.
 3. After review, human-gate blocks until maintainer closes it
 4. Polecat resumes finalize → resolves merge path → prepares all local artifacts
 5. Path A: polecat pushes rebased contributor commits, posts synthesis, waits CI,
-   records merge_command, mails mayor → `complete`
+   records merge_command, mails mayor; finalize cleanup ends the chain
 6. Paths B/C/D: polecat records branch-ready handoff bundle (push_command +
    optional pr_create_command + synthesis body + merge_command) in root bead,
-   mails mayor → `complete`. Polecat does NOT push, create, comment, wait CI,
-   or merge on B/C/D.
+   mails mayor; finalize cleanup ends the chain. Polecat does NOT push, create,
+   comment, wait CI, or merge on B/C/D.
 7. Mayor reads the root bead and performs publish + downstream actions
    out-of-band, per the per-action approval rule
 
@@ -325,13 +325,13 @@ description = """
 Determine the merge path, then:
 - **Path A** (contributor PR, no maintainer changes): push the rebased
   contributor branch, post synthesis comment, wait for CI, record the merge
-  command + `merge_ready: true` in root bead, mail mayor, continue to
-  `complete`. Mayor performs the merge asynchronously.
+  command + `merge_ready: true` in root bead, mail mayor, then run the A.5
+  cleanup. Mayor performs the merge asynchronously.
 - **Paths B/C/D** (involve maintainer-authored content publishing to upstream):
   prepare all local artifacts (squash, branch, cherry-pick, synthesis body),
   record a *branch-ready handoff bundle* (status + push_command + optional
   pr_create_command + synthesis body + merge_command) in the root bead, mail
-  mayor, continue to `complete`. Mayor performs publish + downstream actions
+  mayor, then run the A.5 cleanup. Mayor performs publish + downstream actions
   asynchronously.
 
 **Polecats NEVER run `gh pr merge`** on any path.
@@ -433,13 +433,27 @@ Then mail mayor:
 [adopt-pr]   Root bead:     $ROOT_ID
 ```
 
-The polecat then proceeds to A.5 (cleanup) and the `complete` step in the
-usual molecule order. Mayor's merge happens asynchronously — the polecat's
-own lifecycle does not wait for it.
+The polecat then runs A.5 (cleanup), the final step in the molecule. Mayor's
+merge happens asynchronously — the polecat's own lifecycle does not wait for it.
 
-**A.5: Cleanup:**
+**A.5: Cleanup and final report (terminal — all paths).**
+
+Remove the temporary upstream-base ref. This is the last step on every path
+(there is no separate `complete` step); the polecat's work ends here. Keep the
+per-path status already recorded (`ready-for-merge` for Path A,
+`ready-for-publish` for B/C/D) — the merge/publish itself is mayor's
+asynchronous work, so the polecat does not mark the PR "merged".
 ```bash
-git update-ref -d refs/adopt-pr/upstream-base
+git update-ref -d refs/adopt-pr/upstream-base 2>/dev/null || true
+```
+
+**Report:**
+```
+[adopt-pr] Polecat work complete — handed off to mayor
+[adopt-pr]   Merge path: <A|B|C|D>
+[adopt-pr]   Status:     <ready-for-merge | ready-for-publish>
+[adopt-pr]   Refs:       cleaned up
+[adopt-pr]   Root bead:  $ROOT_ID
 ```
 
 ---
@@ -544,7 +558,7 @@ resolved values in the body):
 [adopt-pr]   Root bead:            $ROOT_ID
 ```
 
-The polecat then proceeds to B.3 (cleanup) and `complete`. Mayor performs
+The polecat then runs B.3 (cleanup), the final step. Mayor performs
 push → post synthesis → wait CI → merge asynchronously per the per-action
 approval rule, independent of the polecat's lifecycle.
 
@@ -624,7 +638,7 @@ Then mail mayor:
 [adopt-pr]   Root bead:            $ROOT_ID
 ```
 
-The polecat then proceeds to C.5 (cleanup) and `complete`. Mayor performs
+The polecat then runs C.5 (cleanup), the final step. Mayor performs
 push → create PR → post synthesis → wait CI → merge → close original
 asynchronously per the per-action approval rule.
 
@@ -703,7 +717,7 @@ Then mail mayor:
 [adopt-pr]   Root bead:            $ROOT_ID
 ```
 
-The polecat then proceeds to D.4 (cleanup) and `complete`. Mayor performs
+The polecat then runs D.4 (cleanup), the final step. Mayor performs
 push → create follow-up PR → post synthesis → wait CI → merge → comment on
 original asynchronously per the per-action approval rule.
 
@@ -720,45 +734,13 @@ original asynchronously per the per-action approval rule.
 
 **Exit criteria:** Merge path resolved. Then:
 - **Path A:** synthesis posted, CI green, `merge_ready: true` + `merge_command`
-  recorded in root bead notes, mayor mailed. Polecat proceeds to `complete`.
+  recorded in root bead notes, mayor mailed, A.5 cleanup run.
 - **Paths B/C/D:** local artifacts prepared (squash / branch / cherry-pick /
   synthesis body), `status: ready-for-publish` + full publish-and-merge bundle
-  recorded in root bead notes, mayor mailed. Polecat proceeds to `complete`
-  without pushing, creating PRs, posting comments, waiting on CI, or merging.
+  recorded in root bead notes, mayor mailed, A.5 cleanup run — without pushing,
+  creating PRs, posting comments, waiting on CI, or merging.
 
 The polecat never invokes `gh pr merge` on any path, and never invokes
 `git push` or `gh pr create` on paths B/C/D. Mayor performs publish and
 downstream actions asynchronously per the per-action approval rule,
 independent of the polecat's lifecycle."""
-
-[[steps]]
-id = "complete"
-title = "Cleanup"
-needs = ["finalize"]
-description = """
-Clean up temporary refs and update root bead with final status.
-
-**1. Read root bead notes:**
-```bash
-ROOT_ID=$(bd mol current --json | jq -r '.molecule_id')
-```
-
-**2. Clean up refs:**
-```bash
-git update-ref -d refs/adopt-pr/upstream-base 2>/dev/null || true
-```
-
-**3. Update root bead notes with final status:**
-```bash
-bd update $ROOT_ID --notes "<existing notes with status: complete>"
-```
-
-**4. Report:**
-```
-[adopt-pr] Complete
-[adopt-pr]   PR merged successfully
-[adopt-pr]   Refs cleaned up
-[adopt-pr]   Root bead updated
-```
-
-**Exit criteria:** All refs cleaned, root bead updated with final status."""
