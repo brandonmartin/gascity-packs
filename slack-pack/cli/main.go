@@ -66,6 +66,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(cmdpkg.NewMapRigCmd(os.Stdout, os.Stderr))
 	cmd.AddCommand(cmdpkg.NewPostMessageCmd(os.Stdout, os.Stderr))
 	cmd.AddCommand(cmdpkg.NewSyncCommandsCmd(os.Stdout, os.Stderr))
+	cmd.AddCommand(cmdpkg.NewSyncSubteamAliasesCmd(os.Stdout, os.Stderr))
 	return cmd
 }
 

@@ -1,14 +1,14 @@
-# Slack pack (v0.1.0 preview — scaffold)
+# Slack pack (v0.0.1 preview — scaffold)
 
 A Slack provider extension for Gas City. Modeled directly on the
 upstream `discord` pack
 (https://github.com/gastownhall/gascity-packs/tree/main/discord) so
 the same primitives can be ported one at a time.
 
-This pack lives in-tree at `examples/slack-pack/` for the moment. It
-is intended to be promoted to the `gastownhall/gascity-packs` repo
-(or a sibling) once the upstream-prep blockers tracked under bd
-`gc-ywe` close.
+This pack lives at `slack-pack/` in the
+[`gastownhall/gascity-packs`](https://github.com/gastownhall/gascity-packs)
+catalog. A city opts in by path-importing its `pack.toml` (see
+"Install" below).
 
 > **Scope: not yet at parity with the discord pack.** The discord pack
 > ships ~350K LOC of provider-agnostic Python state-machine logic.
@@ -60,7 +60,7 @@ Implemented:
       adapter TCP `:8775` (Funnel unchanged). See "Adapter as a
       proxy_process service" below for the cutover.
 
-Not yet implemented (planned):
+Slash-command / launcher / projection surface (operator CLI verbs):
 
 - [x] `gc slack import-app` — register a Slack app manifest with the gc
       city ([`manifest/README.md`](./manifest/README.md#importing-into-gc-gc-slack-import-app))
@@ -78,12 +78,39 @@ Not yet implemented (planned):
       record; `--remove-channels c1,c2` drops just the listed channels
       (the record itself is deleted if the set becomes empty). Both
       removal paths are idempotent.
-- [ ] `gc slack enable-room-launch` (`@@handle` thread-scoped sessions)
-- [ ] `gc slack post-message` (workflow status projection)
+- [x] `gc slack sync-commands` — register/refresh the city's slash
+      commands against the Slack app (read by the adapter's
+      `/slack/interactions` dispatcher).
+- [x] `gc slack sync-subteam-aliases` — reconcile
+      `<city>/.gc/slack/subteam-aliases.json` (the Slack User Group
+      ("subteam") id → gc handle map) with the workspace's live User
+      Groups via Slack `usergroups.list`. Like `sync-commands`, it diffs
+      live against on-disk and supports `--dry-run` and
+      `--output text|json`; unlike it, the write is a non-destructive
+      MERGE — existing entries are preserved, handles are refreshed where
+      the live name differs, new User Groups are added, and entries with
+      no matching live group are kept and reported as "local-only" rather
+      than dropped. The bot token (`--token` / `$SLACK_BOT_TOKEN`) must
+      carry the `usergroups:read` scope; without it the verb reports a
+      readable `missing_scope` error and writes nothing. After a write it
+      prints the same SIGHUP reminder as the other registry-writing verbs.
+- [x] `gc slack post-message` — post (or `--update <ts>`) a Block Kit
+      message to a channel via `chat.postMessage`/`chat.update`. The
+      one-shot verb is shipped; automatic workflow-status projection
+      from gc events is not yet wired.
 - [x] `gc slack retry-peer-fanout` (walks `extmsg.peer_fanout_failed`
       events, dedupes against successful `extmsg.peer_fanout_retried`
       events, re-issues each notification via the gc retry endpoint with
       a small cooldown between attempts)
+
+Not yet implemented (planned):
+
+- [ ] `gc slack enable-room-launch` — the CLI verb writes the
+      `(workspace_id, channel_id) → pool_template` mapping today, but the
+      adapter-side `@@<handle>` thread-scoped session spawn is still a
+      stub: an `@@<handle>` post in an enabled channel currently gets an
+      ephemeral "launcher not yet available" reply rather than spawning a
+      session (tracked under the gc-cby epic).
 
 The adapter exposes `POST /slack/interactions` (HMAC-verified) for
 slash-command, `block_actions`, and `view_submission` dispatch.
@@ -120,16 +147,16 @@ tracked under the gc-cby epic.
 This pack ships **two** Go binaries, each with its own `go.mod` so
 either can travel intact when the pack is mirrored upstream:
 
-- **Adapter** — `examples/slack-pack/adapter/gc-slack-adapter`,
+- **Adapter** — `slack-pack/adapter/gc-slack-adapter`,
   built from `adapter/main.go`. The public-facing webhook receiver
   (Slack → `:8775` over Tailscale Funnel) and outbound publisher
   (`/publish` over the controller-managed UDS). Long-running; gc
   supervises it via the `[[service]]` block in `pack.toml`.
 
-- **Operator CLI** — `examples/slack-pack/cli/gc-slack-cli`, built
+- **Operator CLI** — `slack-pack/cli/gc-slack-cli`, built
   from `cli/main.go` + `cli/cmd/`. Backs the `gc slack <cmd>` verb
   surface (import-app, map-channel, map-rig, sync-commands,
-  enable-room-launch, post-message). One-shot per invocation; not
+  sync-subteam-aliases, enable-room-launch, post-message). One-shot per invocation; not
   supervised. The pack's `commands/<cmd>.sh` wrappers exec it at
   `$GC_PACK_DIR/cli/gc-slack-cli` so operator command-line ergonomics
   stay identical to the pre-relocation gc-binary verbs.
@@ -139,7 +166,7 @@ Build commands and CI for both binaries are documented in
 
 ## Architecture (current)
 
-The Go adapter at `examples/slack-pack/adapter/gc-slack-adapter`
+The Go adapter at `slack-pack/adapter/gc-slack-adapter`
 (built from `adapter/main.go` colocated with this pack) is the
 public-facing webhook receiver and outbound publisher. This
 pack adds CLI surface around it: `bind-dm` writes to gc's
@@ -158,12 +185,31 @@ Slack  ──HMAC──▶  Go adapter :8775  ──▶ gc /extmsg/inbound
                    └────────────────┘
 ```
 
+The `:8775` public port above is the reference Funnel-fronted
+deployment (`LISTEN_PUBLIC=:8775`, with a Tailscale Funnel rule
+`:443 → :8775`). The bare adapter default is `:8765` — see the
+`LISTEN_PUBLIC` row in "Adapter env contract" below.
+
+The adapter's `/publish` endpoint **requires session attribution**: every
+request must carry a `session_id` (or, for older gc binaries, the legacy
+`metadata.source_session_id`). A request with neither is rejected with HTTP
+400 and nothing is posted to Slack:
+
+```json
+{"error": "publish requires session attribution: provide session_id or metadata.source_session_id"}
+```
+
+This fails closed against identity-less channel-root posts under the default
+bot identity. System/bot status notifications that intentionally post as the bot
+go through `gc slack post-message` (direct to Slack `chat.postMessage`),
+which bypasses `/publish` entirely and is unaffected by this guard.
+
 ## Install
 
 ```toml
 # city.toml
 [imports.slack]
-source = "/path/to/examples/slack-pack"
+source = "/path/to/gascity-packs/slack-pack"
 ```
 
 Then `gc reload` (or wait for the supervisor to pick up the change).
@@ -264,7 +310,7 @@ When `GC_SERVICE_SOCKET` is set, the adapter:
 ### Adapter env contract
 
 The full adapter env contract — what the binary at
-`examples/slack-pack/adapter/main.go` reads — is enumerated in the
+`slack-pack/adapter/main.go` reads — is enumerated in the
 package docstring at the top of that file. Summary:
 
 **Must-set** (no default; adapter exits at startup if missing):
@@ -289,6 +335,7 @@ package docstring at the top of that file. Summary:
 | `HANDLE_PREFIX`                | `@`                                              | Leading address token for keyword routing. Empty disables routing.              |
 | `IDENTITY_STORE_PATH`          | `/tmp/gc-slack-adapter/identities.json`          | JSON file backing the per-session `chat:write.customize` identity registry.    |
 | `HANDLE_ALIAS_STORE_PATH`      | `/tmp/gc-slack-adapter/handle-aliases.json`      | JSON file backing the cross-channel handle → session-id alias registry.        |
+| `SLACK_SUBTEAM_ALIAS_FILE`     | `<GC_CITY_PATH>/.gc/slack/subteam-aliases.json` (or `/tmp/gc-slack-adapter/subteam-aliases.json`) | JSON map of Slack User Group ("subteam") IDs → gc handles, hand-edited or written by `gc slack sync-subteam-aliases`. Required to route the unlabeled `<!subteam^Sxxx>` mention shape; the labeled `<!subteam^Sxxx\|@handle>` / `<!subteam^Sxxx\|handle>` shape is gated by `HANDLE_ALIAS_STORE_PATH` instead. Read-only at runtime; SIGHUP or restart to reload. |
 | `INBOUND_FILE_STORE`           | `/tmp/gc-slack-adapter/inbound`                  | Directory for downloaded inbound Slack file attachments.                        |
 | `INBOUND_FILE_TTL`             | `168h` (7 days)                                  | Janitor retention. `0` disables sweeping.                                       |
 | `INBOUND_FILE_SWEEP_INTERVAL`  | `1h`                                             | Janitor scan period. `0` disables sweeping.                                     |
@@ -317,15 +364,16 @@ the adapter runs as a `[[service]]`; do not set them by hand):
 
 ### SIGHUP-driven reload
 
-Four of the adapter's registries are written by `gc slack` CLI
+Five of the adapter's registries are written by `gc slack` CLI
 commands and read by the adapter at startup:
 
-| Registry             | File                          | CLI writer                    |
-| -------------------- | ----------------------------- | ----------------------------- |
-| Apps                 | `apps.json`                   | `gc slack import-app`         |
-| Channel mappings     | `channel_mappings.json`       | `gc slack map-channel`        |
-| Rig mappings         | `rig_mappings.json`           | `gc slack map-rig`            |
-| Room launch mappings | `room_launch_mappings.json`   | `gc slack enable-room-launch` |
+| Registry             | File                          | CLI writer                      |
+| -------------------- | ----------------------------- | ------------------------------- |
+| Apps                 | `apps.json`                   | `gc slack import-app`           |
+| Channel mappings     | `channel_mappings.json`       | `gc slack map-channel`          |
+| Rig mappings         | `rig_mappings.json`           | `gc slack map-rig`              |
+| Room launch mappings | `room_launch_mappings.json`   | `gc slack enable-room-launch`   |
+| Subteam aliases      | `subteam-aliases.json`        | `gc slack sync-subteam-aliases` |
 
 Send `SIGHUP` to the running adapter to pick up CLI-driven changes
 without a full restart:
@@ -334,7 +382,7 @@ without a full restart:
 pkill -HUP gc-slack-adapter
 ```
 
-Reload is all-or-nothing across the four files — a single parse
+Reload is all-or-nothing across the five files — a single parse
 failure (corrupt JSON, unknown `target_kind`, missing required field,
 file >10 MiB) aborts the cycle with the live in-memory state
 untouched. Errors are logged at WARN; the adapter keeps serving.
@@ -382,7 +430,7 @@ GC_CITY_NAME=<your-city-name>
 
 ```
 # 1. Build the adapter binary in place (source colocated with the pack)
-( cd examples/slack-pack/adapter && go build -o gc-slack-adapter )
+( cd slack-pack/adapter && go build -o gc-slack-adapter )
 
 # 2. Source the secrets so the supervisor inherits them
 set -a; source "${XDG_CONFIG_HOME:-$HOME/.config}/gc-slack-adapter/env"; set +a
@@ -415,7 +463,7 @@ Rollback: remove (or comment out) the `[[service]]` block in
 legacy script:
 
 ```
-( cd examples/slack-pack/adapter \
+( cd slack-pack/adapter \
     && nohup ./run.sh > /tmp/gc-slack-adapter/run.log 2>&1 & disown )
 ```
 

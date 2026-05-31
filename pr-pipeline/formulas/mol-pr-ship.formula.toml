@@ -155,39 +155,73 @@ outcome recorded.
 
 [[steps]]
 id = "review-iterate"
-title = "Stage 2 — iterate self-review until no blockers/majors"
+title = "Stage 2 — iterate adversarial multi-reviewer panel until no blockers/majors"
 needs = ["simplify"]
 description = """
-Iterate `mol-pr-review` (or equivalent self-review) until there are no
-blocker or major findings. This is the load-bearing stage.
+Iterate an independent multi-reviewer panel against the diff until there
+are no blocker or major findings. This is the load-bearing stage.
+
+Each iteration spawns a panel of independent reviewer subagents (via the
+standard Agent tool — no experimental gate), collects their findings, runs
+an adversarial synthesis pass that keeps only findings surviving scrutiny,
+then fixes blockers/majors in place. Independent reviewers catch blind
+spots a single self-review pass misses; the adversarial synthesis is the
+debate a panel would have, performed by the lead at synthesis time.
 
 The loop:
 
-1. Run a self-review pass against the diff. If a real `mol-pr-review`
-   sub-formula or `gh pr` exists for this branch, use it. Otherwise,
-   walk the diff against the 11 scorecard categories inline:
-   - Cat 1 Behavioral Correctness, Cat 2 Contract Fidelity,
-     Cat 3 Blast Radius, Cat 4 Concurrency,
-     Cat 5 Error Handling, Cat 6 Security,
-     Cat 7 Resource Lifecycle, Cat 8 Release Safety,
+1. Prepare the diff context for this iteration:
+
+   ```bash
+   ROOT_ID=$(bd mol current --json | jq -r '.molecule_id')
+   git diff origin/main..HEAD > "/tmp/pr-ship-${BRANCH//\\//-}-iter${ITER_N}.patch"
+   ```
+
+2. Spawn the reviewer panel in a SINGLE message with parallel Agent
+   calls (one per reviewer, so they run concurrently):
+
+   - `code-reviewer`      — correctness, maintainability, contracts
+   - `security-reviewer`  — secrets, injection, auth, OWASP
+   - `codex:codex-rescue` — independent grounded second opinion;
+     consistently catches semantic bugs pattern-matching reviewers miss
+   - a language reviewer matching the diff (`go-reviewer`,
+     `typescript-reviewer`, `python-reviewer`, …); omit if no code of
+     that language changed (e.g. a docs- or config-only diff)
+
+   Give each reviewer the patch path and this rubric. Score every
+   finding by category + severity + confidence:
+   - Categories: Cat 1 Behavioral Correctness, Cat 2 Contract Fidelity,
+     Cat 3 Blast Radius, Cat 4 Concurrency, Cat 5 Error Handling,
+     Cat 6 Security, Cat 7 Resource Lifecycle, Cat 8 Release Safety,
      Cat 9 Test Evidence, Cat 10 Architectural Consistency,
      Cat 11 Debuggability.
+   - Severity: blocker | major | minor | nit
+   - Confidence: high | medium | low
 
-2. Pre-flag the seven recurring themes (see `mol-pr-review` for the
+   Pre-flag the seven recurring themes (see `mol-pr-review` for the
    full list — test isolation, test retry, stale-state guards,
    fail-closed, bootstrap init, API contract, transient retry).
 
-3. Classify findings as **blocker**, **major**, or **minor**:
+3. Adversarial synthesis (you, the polecat lead). Merge the panel's
+   reports and dedupe overlapping findings. Then CHALLENGE every blocker
+   and major before accepting it: for each high-severity flag, try to
+   refute it against the actual diff. Keep only findings that survive —
+   a flag no reviewer can ground in the diff is dropped and the drop is
+   noted. This is the debate phase, done once at synthesis instead of
+   inter-agent messaging.
+
+4. Classify the surviving findings as **blocker**, **major**, or
+   **minor**:
    - blocker: correctness/safety defect that must be fixed before merge
    - major:   design/precision defect a careful reviewer will flag
    - minor:   style or nice-to-have
 
-4. If any blocker or major remains:
+5. If any blocker or major remains:
    - Fix in-place
    - Commit (`git commit -m "fix: ..."`)
-   - Go to step 1 of the loop
+   - Increment ITER_N and go to step 1 of the loop
 
-5. Exit the loop when no blockers/majors remain (minors OK to ship).
+6. Exit the loop when no blockers/majors remain (minors OK to ship).
 
 **Cap at 3 iterations.** If iteration 3 still has blockers or majors,
 report as **blocked — review not converging** and stop the formula.
@@ -195,9 +229,9 @@ report as **blocked — review not converging** and stop the formula.
 Record per-iteration state:
 
 ```bash
-ROOT_ID=$(bd mol current --json | jq -r '.molecule_id')
 ITER_N=<1|2|3>
 bd update "$ROOT_ID" --notes "review_iter_$ITER_N: blockers=<n>, majors=<n>, minors=<n>
+review_panel_$ITER_N: <reviewers run>; dropped=<n high-severity flags refuted in synthesis>
 review_fix_commits_$ITER_N: <sha>,<sha>,..."
 ```
 

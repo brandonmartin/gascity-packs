@@ -76,6 +76,7 @@ bd close "$ROOT_ID" --reason "<reason>"
   reads it to decide whether the halt-after-2 condition has fired."""
 formula = "mol-pr-iterate"
 version = 1
+contract = "graph.v2"
 
 [vars]
 [vars.pr]

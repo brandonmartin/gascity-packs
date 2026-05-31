@@ -323,6 +323,21 @@ type config struct {
 	// <GC_CITY_PATH>/.gc/slack/rig_mappings.json when GC_CITY_PATH is
 	// set, else /tmp/gc-slack-adapter/rig_mappings.json.
 	rigMappingPath string
+	// subteamAliasStorePath is the JSON file mapping Slack User Group
+	// ("subteam") IDs (e.g. "S0123ABCD") to gc handles. Read-only on
+	// this side; same SIGHUP-or-restart reload contract as
+	// channelMappingPath. The operator edits the file directly or via a
+	// future `gc slack subteam-alias` command. The map is the ONLY gate
+	// for the UNLABELED subteam mention shape `<!subteam^Sxxx>` Slack
+	// emits in event payloads — without an entry the inbound falls
+	// through to channel fanout. The LABELED shape
+	// `<!subteam^Sxxx|@handle>` remains gated by handleAliasRegistry
+	// against the `@handle` label (bead gpk-2zi). Sourced from
+	// SLACK_SUBTEAM_ALIAS_FILE, defaulting to
+	// <GC_CITY_PATH>/.gc/slack/subteam-aliases.json when GC_CITY_PATH
+	// is set, else /tmp/gc-slack-adapter/subteam-aliases.json. Bead
+	// gpk-hmr.2.
+	subteamAliasStorePath string
 	// fileUploadRoot is the absolute filesystem prefix
 	// /publish-file is allowed to read. Empty disables /publish-file
 	// entirely (fail-closed). gc and the adapter share a filesystem,
@@ -450,12 +465,14 @@ func loadConfigFromEnv(getenv func(string) string) (config, error) {
 	defaultAppsRegistryPath := "/tmp/gc-slack-adapter/apps.json"
 	defaultThreadSessionsPath := "/tmp/gc-slack-adapter/thread_sessions.json"
 	defaultRoomLaunchPath := "/tmp/gc-slack-adapter/room_launch_mappings.json"
+	defaultSubteamAliasPath := "/tmp/gc-slack-adapter/subteam-aliases.json"
 	if cityPath := getenv("GC_CITY_PATH"); cityPath != "" {
 		defaultMappingPath = filepath.Join(cityPath, ".gc", "slack", "channel_mappings.json")
 		defaultRigMappingPath = filepath.Join(cityPath, ".gc", "slack", "rig_mappings.json")
 		defaultAppsRegistryPath = filepath.Join(cityPath, ".gc", "slack", "apps.json")
 		defaultThreadSessionsPath = filepath.Join(cityPath, ".gc", "slack", "thread_sessions.json")
 		defaultRoomLaunchPath = filepath.Join(cityPath, ".gc", "slack", "room_launch_mappings.json")
+		defaultSubteamAliasPath = filepath.Join(cityPath, ".gc", "slack", "subteam-aliases.json")
 		cfg.cityPath = cityPath
 	}
 	cfg.channelMappingPath = envOrFn("SLACK_CHANNEL_MAPPING_PATH", defaultMappingPath)
@@ -467,6 +484,7 @@ func loadConfigFromEnv(getenv func(string) string) (config, error) {
 	cfg.oauthSlackBaseURL = getenv("SLACK_OAUTH_BASE_URL")
 	cfg.threadSessionsStorePath = envOrFn("GC_SLACK_THREAD_SESSIONS_FILE", defaultThreadSessionsPath)
 	cfg.roomLaunchPath = envOrFn("GC_SLACK_ROOM_LAUNCH_FILE", defaultRoomLaunchPath)
+	cfg.subteamAliasStorePath = envOrFn("SLACK_SUBTEAM_ALIAS_FILE", defaultSubteamAliasPath)
 
 	// Retention controls. Defaults: keep inbound files for 7 days,
 	// sweep every hour. Setting either to "0" disables the janitor.
@@ -918,12 +936,22 @@ func main() {
 	}
 	log.Printf("thread session registry: store=%s", cfg.threadSessionsStorePath)
 
+	threadHandleSticky := newThreadHandleStickiness()
+	log.Printf("thread handle stickiness: in-memory only (no persistence in v1)")
+
 	roomLaunchReg, err := newRoomLaunchMappingRegistry(cfg.roomLaunchPath)
 	if err != nil {
 		log.Fatalf("room launch mapping registry: %v", err)
 	}
 	log.Printf("room launch mapping registry: store=%s (read-only; SIGHUP or restart to reload)",
 		cfg.roomLaunchPath)
+
+	subteamAliases, err := newSubteamAliasMap(cfg.subteamAliasStorePath)
+	if err != nil {
+		log.Fatalf("subteam alias map: %v", err)
+	}
+	log.Printf("subteam alias map: store=%s entries=%d (read-only; SIGHUP or restart to reload)",
+		cfg.subteamAliasStorePath, subteamAliases.Len())
 
 	channelMapReg, err := newChannelMappingRegistry(cfg.channelMappingPath)
 	if err != nil {
@@ -961,7 +989,7 @@ func main() {
 	// (HMAC-verified) and /healthz. Bound to 0.0.0.0 by default so
 	// Tailscale Funnel can reach it.
 	publicMux := http.NewServeMux()
-	publicMux.HandleFunc("/slack/events", handleSlackEvents(cfg, aliasReg, threadReg, roomLaunchReg))
+	publicMux.HandleFunc("/slack/events", handleSlackEvents(cfg, aliasReg, threadReg, roomLaunchReg, subteamAliases, threadHandleSticky))
 	publicMux.HandleFunc("/slack/interactions", handleSlackInteractions(cfg, channelMapReg, rigMapReg))
 	registerOAuthHandlers(publicMux, cfg, appsReg)
 	publicMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -1058,7 +1086,7 @@ func main() {
 	signal.Notify(hupCh, syscall.SIGHUP)
 	defer signal.Stop(hupCh)
 	go runReloadLoop(reloadStop, hupCh, func() {
-		logReloadOutcome(appsReg, channelMapReg, rigMapReg, roomLaunchReg)
+		logReloadOutcome(appsReg, channelMapReg, rigMapReg, roomLaunchReg, subteamAliases)
 	})
 
 	stop := make(chan os.Signal, 1)
@@ -1149,11 +1177,6 @@ func handlePublish(cfg config, reg *identityRegistry) http.HandlerFunc {
 			return
 		}
 
-		post := slackPostMessageReq{
-			Channel:  req.Conversation.ConversationID,
-			Text:     req.Text,
-			ThreadTS: req.ReplyToMessageID,
-		}
 		// SessionID precedence: explicit field wins (used by direct-to-adapter
 		// callers like smoke tests). Otherwise fall back to the wire-metadata
 		// key gc populates when forwarding from /v0/city/.../extmsg/outbound.
@@ -1161,8 +1184,33 @@ func handlePublish(cfg config, reg *identityRegistry) http.HandlerFunc {
 		if identitySessionID == "" {
 			identitySessionID = req.Metadata[metadataKeySourceSessionID]
 		}
+		// Fail closed on identity-less publishes (gpk-jqou). With neither the
+		// native session_id nor the legacy metadata.source_session_id set, the
+		// adapter would otherwise post at channel root under the default bot
+		// identity (as=""), which surfaced as the spurious "gc oversight PL
+		// replied in channel" anomaly on 2026-05-25. Every legitimate /publish
+		// caller carries a session — the gc HandleOutbound path and the
+		// publish / publish-to-channel / reply-current CLIs all resolve one (or
+		// fail closed) before reaching here, and system bot notifications use
+		// `gc slack post-message`, which posts to Slack directly and never
+		// traverses this endpoint. So rejecting attribution-less requests has
+		// no legitimate caller to break; it only closes the regression door.
+		if identitySessionID == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"error": "publish requires session attribution: provide session_id or metadata.source_session_id",
+			})
+			return
+		}
+
+		post := slackPostMessageReq{
+			Channel:  req.Conversation.ConversationID,
+			Text:     req.Text,
+			ThreadTS: req.ReplyToMessageID,
+		}
 		identityApplied := ""
-		if reg != nil && identitySessionID != "" {
+		if reg != nil {
 			if rec, ok := reg.Get(identitySessionID); ok {
 				post.Username = rec.Username
 				post.IconURL = rec.IconURL
@@ -1691,7 +1739,7 @@ func postToSlack(token string, req slackPostMessageReq) (*slackPostMessageResp, 
 	return &sr, nil
 }
 
-func handleSlackEvents(cfg config, aliasReg *handleAliasRegistry, threadReg *threadSessionRegistry, roomLaunchReg *roomLaunchMappingRegistry) http.HandlerFunc {
+func handleSlackEvents(cfg config, aliasReg *handleAliasRegistry, threadReg *threadSessionRegistry, roomLaunchReg *roomLaunchMappingRegistry, subteamMap *subteamAliasMap, threadHandleSticky *threadHandleStickiness) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1746,7 +1794,7 @@ func handleSlackEvents(cfg config, aliasReg *handleAliasRegistry, threadReg *thr
 		// cfg.dispatchSem when an inbound triggers an alias dispatch (which
 		// would otherwise hold two slots concurrently — see gc-cby.26
 		// Phase 4 review fix).
-		go processSlackEvent(cfg, aliasReg, threadReg, roomLaunchReg, env, release)
+		go processSlackEvent(cfg, aliasReg, threadReg, roomLaunchReg, subteamMap, threadHandleSticky, env, release)
 	}
 }
 
@@ -1860,7 +1908,7 @@ func slackKindFromChannelType(channelType, channelID string) string {
 // in tests or in deployments that disable launcher mode entirely; the
 // `@@<handle>` branch falls through to the regular `@<handle>` path
 // when nil.
-func processSlackEvent(cfg config, aliasReg *handleAliasRegistry, threadReg *threadSessionRegistry, roomLaunchReg *roomLaunchMappingRegistry, env slackEventEnvelope, release func()) {
+func processSlackEvent(cfg config, aliasReg *handleAliasRegistry, threadReg *threadSessionRegistry, roomLaunchReg *roomLaunchMappingRegistry, subteamMap *subteamAliasMap, threadHandleSticky *threadHandleStickiness, env slackEventEnvelope, release func()) {
 	released := false
 	defer func() {
 		if !released {
@@ -1903,10 +1951,71 @@ func processSlackEvent(cfg config, aliasReg *handleAliasRegistry, threadReg *thr
 
 	text := msg.Text
 	target := ""
-	if cfg.handlePrefix != "" {
+	// Slack User Group mentions (beads gpk-2zi + gpk-hmr.2). Slack
+	// delivers two shapes for a User Group mention and both must
+	// normalize to the same address-by-handle dispatch path:
+	//
+	//   Labeled:    <!subteam^TEAMID|@handle>   (autocomplete in text)
+	//   Unlabeled:  <!subteam^TEAMID>           (event-payload form)
+	//
+	// Different gating policy per shape, intentional asymmetry:
+	//
+	//   - LABELED: gated by aliasReg.Get(@handle) — same gate as the
+	//     `@handle:` text-prefix path. The label is in the message
+	//     itself, so the gate prevents arbitrary in-workspace User
+	//     Groups (whose labels happen to look like gc handle names but
+	//     have no registered session) from auto-routing.
+	//
+	//   - UNLABELED: gated by subteamAliasMap.Get(TEAMID) — Slack does
+	//     NOT emit a handle label in this shape, so the operator-edited
+	//     subteam-aliases.json IS the allowlist. A subteam ID with no
+	//     entry in the map falls through to channel fanout. Locked-down
+	//     workspaces without the `usergroups:read` scope still work:
+	//     the map is populated off-band, no Slack API call is made.
+	//
+	// Downstream dispatch (the `if target != "" && aliasReg != nil`
+	// block below) is unchanged — it still gates the cross-channel
+	// session-message POST on aliasReg.Get, so a subteam-ID resolution
+	// to a handle with no registered session yields the channel-bound
+	// session seeing ExplicitTarget but no alias goroutine firing.
+	// That matches the existing `@handle:` text-prefix semantics.
+	if h, sid, rest, ok := parseSubteamMentionPrefix(msg.Text); ok {
+		if h != "" {
+			// Labeled form: preserve gpk-2zi behavior — aliasReg gate.
+			if aliasReg != nil {
+				if _, aliased := aliasReg.Get(h); aliased {
+					target = h
+					text = rest
+				}
+			}
+		} else {
+			// Unlabeled form: subteamAliasMap is the gate.
+			if mappedHandle, mapped := subteamMap.Get(sid); mapped {
+				target = mappedHandle
+				text = rest
+			}
+		}
+	}
+	if target == "" && cfg.handlePrefix != "" {
 		if h, rest := parseHandlePrefix(msg.Text, cfg.handlePrefix); h != "" {
 			target = h
 			text = rest
+		}
+	}
+
+	// Thread-stickiness: if no explicit target was parsed AND this is a
+	// thread reply (msg.ThreadTS is set and points at an earlier message,
+	// not at the current message itself), inherit the target from the
+	// thread root if a prior alias-dispatch registered one. Lets a human
+	// say `@mayor: hi` once at the top of a thread and then keep replying
+	// in the thread without re-tagging. An explicit re-tag in the thread
+	// reply still wins because this lookup runs only on parser miss.
+	if target == "" && threadHandleSticky != nil && msg.ThreadTS != "" && msg.ThreadTS != msg.TS {
+		if stickyHandle, ok := threadHandleSticky.Lookup(msg.Channel, msg.ThreadTS); ok {
+			target = stickyHandle
+			// text is unchanged: the human didn't write a prefix, so we
+			// route the full message body — same shape as if they had
+			// typed `@<handle>: <body>` from the start.
 		}
 	}
 
@@ -1971,6 +2080,29 @@ func processSlackEvent(cfg config, aliasReg *handleAliasRegistry, threadReg *thr
 	log.Printf("inbound: chan=%s user=%s ts=%s thread=%s target=%q files=%d text=%dch",
 		msg.Channel, msg.User, msg.TS, msg.ThreadTS, target, len(attachments), len(text))
 
+	// "Eyes" reaction signals to the human that an agent was explicitly
+	// addressed (via `@handle:` prefix or a Slack User Group mention
+	// resolved via subteamAliasMap) and is processing the message. Only
+	// fires when a target was parsed — generic channel chatter that
+	// merely lands on the bound session via postInbound does NOT trigger
+	// the eye, because most channel messages aren't intentionally
+	// directed at an agent. Fires once per inbound (the alias-dispatch
+	// fanout below targets the same Slack TS, so a duplicate react would
+	// be a Slack no-op). Best-effort: errors are logged and don't block
+	// the dispatch path.
+	if target != "" && cfg.slackBotToken != "" {
+		go func(channel, ts string) {
+			_, err := postReactionToSlack(cfg.slackBotToken, slackReactionsAddReq{
+				Channel:   channel,
+				Name:      "eyes",
+				Timestamp: ts,
+			})
+			if err != nil {
+				log.Printf("react eyes failed: chan=%s ts=%s: %v", channel, ts, err)
+			}
+		}(msg.Channel, msg.TS)
+	}
+
 	// Cross-channel address-by-handle: if the parsed target matches a
 	// registered alias, dispatch the inbound directly to the aliased
 	// session via gc's session-message API, regardless of channel
@@ -1979,6 +2111,16 @@ func processSlackEvent(cfg config, aliasReg *handleAliasRegistry, threadReg *thr
 	// because target != its handle.
 	if target != "" && aliasReg != nil {
 		if aliasedSessionID, ok := aliasReg.Get(target); ok {
+			// Thread-stickiness bind: record (channel, msg.TS) -> target
+			// so subsequent thread replies (whose msg.ThreadTS will
+			// equal this msg.TS) inherit the same handle without the
+			// human re-tagging. Only binds when the dispatch actually
+			// fires — a target with no alias entry shouldn't poison the
+			// sticky map. Subsequent thread replies look this up before
+			// the parsers run.
+			if threadHandleSticky != nil {
+				threadHandleSticky.Bind(msg.Channel, msg.TS, target)
+			}
 			// Transfer the slot we already hold to the alias goroutine.
 			// No new acquireDispatchSlot — that would double-count
 			// against dispatchSem (gc-cby.26 Phase 4 review fix).

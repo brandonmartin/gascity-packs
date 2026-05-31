@@ -600,12 +600,6 @@ func TestHandlePublishInjectsIdentity(t *testing.T) {
 			publishBody: `{"session_id":"gc-pl-99","conversation":{"conversation_id":"C3","kind":"room"},"text":"y"}`,
 			// All want* zero — no override should be sent.
 		},
-		{
-			name:        "empty session id skips lookup entirely",
-			registerSID: "gc-pl-1",
-			registerRec: identityRecord{Username: "Gascity PL"},
-			publishBody: `{"conversation":{"conversation_id":"C4","kind":"room"},"text":"z"}`,
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -671,11 +665,6 @@ func TestHandlePublishIdentityFallsBackToMetadataSourceSessionID(t *testing.T) {
 			wantUsername: "Gascity PL",
 		},
 		{
-			name:         "no session anywhere posts under default identity",
-			body:         `{"conversation":{"conversation_id":"C1"},"text":"x"}`,
-			wantUsername: "",
-		},
-		{
 			name:         "metadata with unknown session id has no identity",
 			body:         `{"conversation":{"conversation_id":"C1"},"text":"x","metadata":{"source_session_id":"gc-unknown"}}`,
 			wantUsername: "",
@@ -712,6 +701,70 @@ func TestHandlePublishIdentityFallsBackToMetadataSourceSessionID(t *testing.T) {
 			}
 			if captured.Username != tc.wantUsername {
 				t.Errorf("slack username = %q, want %q", captured.Username, tc.wantUsername)
+			}
+		})
+	}
+}
+
+func TestHandlePublishRejectsEmptySession(t *testing.T) {
+	// gpk-jqou: an attribution-less /publish (no session_id and no
+	// metadata.source_session_id) must fail closed with HTTP 400 and must
+	// NOT post to Slack. Previously it fell through to a channel-root post
+	// under the default bot identity (as=""), the root cause of the spurious
+	// "gc oversight PL replied in channel" anomaly.
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "no session_id and no metadata",
+			body: `{"conversation":{"conversation_id":"C1","kind":"room"},"text":"x"}`,
+		},
+		{
+			name: "empty session_id, empty metadata source_session_id",
+			body: `{"session_id":"","conversation":{"conversation_id":"C1","kind":"room"},"text":"x","metadata":{"source_session_id":""}}`,
+		},
+		{
+			name: "metadata present but unrelated keys only",
+			body: `{"conversation":{"conversation_id":"C1","kind":"room"},"text":"x","metadata":{"idempotency_key":"abc"}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg, err := newIdentityRegistry(filepath.Join(t.TempDir(), "id.json"))
+			if err != nil {
+				t.Fatalf("newIdentityRegistry: %v", err)
+			}
+
+			origBase := slackAPIBase
+			t.Cleanup(func() { slackAPIBase = origBase })
+			var slackCalled bool
+			fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				slackCalled = true
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"ok":true,"ts":"1.2"}`))
+			}))
+			t.Cleanup(fakeSlack.Close)
+			slackAPIBase = fakeSlack.URL
+
+			cfg := config{slackBotToken: "xoxb-test"}
+			req := httptest.NewRequest(http.MethodPost, "/publish", strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			handlePublish(cfg, reg)(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body=%q)", rec.Code, rec.Body.String())
+			}
+			if slackCalled {
+				t.Error("Slack chat.postMessage was called for an attribution-less publish; want no post")
+			}
+			var got map[string]string
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode error body %q: %v", rec.Body.String(), err)
+			}
+			const want = "publish requires session attribution: provide session_id or metadata.source_session_id"
+			if got["error"] != want {
+				t.Errorf("error = %q, want %q", got["error"], want)
 			}
 		})
 	}
@@ -1051,10 +1104,10 @@ func TestRegisterAdapterEscapesCityName(t *testing.T) {
 	t.Cleanup(gcStub.Close)
 
 	cfg := config{
-		gcAPIBase: gcStub.URL,
-		cityName:  "city/with slash",
-		provider:  "slack",
-		accountID: "T0",
+		gcAPIBase:   gcStub.URL,
+		cityName:    "city/with slash",
+		provider:    "slack",
+		accountID:   "T0",
 		dispatchSem: defaultTestDispatchSem,
 	}
 	if err := registerAdapter(cfg); err != nil {
@@ -2112,7 +2165,7 @@ func TestDownloadSlackFiles(t *testing.T) {
 			cfg := config{
 				slackBotToken:    "xoxb-test",
 				inboundFileStore: filepath.Join(t.TempDir(), "inbound"),
-				dispatchSem: defaultTestDispatchSem,
+				dispatchSem:      defaultTestDispatchSem,
 			}
 			if tc.emptyStore {
 				cfg.inboundFileStore = ""
@@ -2458,7 +2511,7 @@ func TestDownloadSlackFilesPermissions(t *testing.T) {
 	cfg := config{
 		slackBotToken:    "xoxb-test",
 		inboundFileStore: filepath.Join(t.TempDir(), "inbound"),
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:      defaultTestDispatchSem,
 	}
 	files := []slackFile{{
 		ID:         "F1",
@@ -2542,7 +2595,7 @@ func TestTightenStorePermissions(t *testing.T) {
 			identityStorePath:    idFile,
 			handleAliasStorePath: aliasFile,
 			inboundFileStore:     inboundDir,
-			dispatchSem: defaultTestDispatchSem,
+			dispatchSem:          defaultTestDispatchSem,
 		}
 		tightenStorePermissions(cfg)
 
@@ -2592,7 +2645,7 @@ func TestTightenStorePermissions(t *testing.T) {
 			identityStorePath:    filepath.Join(dir, "missing-id", "id.json"),
 			handleAliasStorePath: filepath.Join(dir, "missing-alias", "alias.json"),
 			inboundFileStore:     filepath.Join(dir, "missing-inbound"),
-			dispatchSem: defaultTestDispatchSem,
+			dispatchSem:          defaultTestDispatchSem,
 		}
 		// Should not panic, should not error to caller (helper returns void).
 		tightenStorePermissions(cfg)
@@ -3208,7 +3261,7 @@ func TestProcessSlackEventReleasesSlotOnNoAliasPath(t *testing.T) {
 		provider:     "slack",
 		accountID:    "T1",
 		handlePrefix: "@",
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:  defaultTestDispatchSem,
 	}
 	aliasReg := newTestHandleAliasRegistry(t)
 
@@ -3221,7 +3274,7 @@ func TestProcessSlackEventReleasesSlotOnNoAliasPath(t *testing.T) {
 
 	var releases int32
 	release := func() { atomic.AddInt32(&releases, 1) }
-	processSlackEvent(cfg, aliasReg, nil, nil, env, release)
+	processSlackEvent(cfg, aliasReg, nil, nil, nil, nil, env, release)
 
 	if got := atomic.LoadInt32(&releases); got != 1 {
 		t.Errorf("release fired %d times on no-alias path; want exactly 1", got)
@@ -3253,7 +3306,7 @@ func TestProcessSlackEventTransfersSlotToAliasGoroutine(t *testing.T) {
 		provider:     "slack",
 		accountID:    "T1",
 		handlePrefix: "@",
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:  defaultTestDispatchSem,
 	}
 	aliasReg := newTestHandleAliasRegistry(t)
 	if err := aliasReg.Set("mayor", "gc-2568"); err != nil {
@@ -3268,7 +3321,7 @@ func TestProcessSlackEventTransfersSlotToAliasGoroutine(t *testing.T) {
 
 	var releases int32
 	release := func() { atomic.AddInt32(&releases, 1) }
-	processSlackEvent(cfg, aliasReg, nil, nil, env, release)
+	processSlackEvent(cfg, aliasReg, nil, nil, nil, nil, env, release)
 
 	// The alias goroutine runs after processSlackEvent returns; wait
 	// for the dispatch to land on the gc stub.
@@ -3344,7 +3397,7 @@ func TestHandleSlackEventsDropsWhenSemaphoreFull(t *testing.T) {
 	req.Header.Set("X-Slack-Signature", sig)
 	w := httptest.NewRecorder()
 
-	handleSlackEvents(cfg, aliasReg, nil, nil)(w, req)
+	handleSlackEvents(cfg, aliasReg, nil, nil, nil, nil)(w, req)
 
 	// Slack always sees 200 (we ack quickly to suppress retries).
 	if w.Result().StatusCode != http.StatusOK {
@@ -3523,7 +3576,7 @@ func TestSlackEventsPerAppSignatureLookup(t *testing.T) {
 	req := signedSlackEventRequest(t, "secret-a2", envBody)
 	w := httptest.NewRecorder()
 
-	handleSlackEvents(cfg, aliasReg, nil, nil)(w, req)
+	handleSlackEvents(cfg, aliasReg, nil, nil, nil, nil)(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200 (per-app lookup must verify with A2's secret)", w.Result().StatusCode)
@@ -3550,7 +3603,7 @@ func TestSlackEventsRegistryMissUsesEnvFallback(t *testing.T) {
 		accountID:       "T1",
 		slackSigningKey: "env-fallback",
 		appsRegistry:    appsReg,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:     defaultTestDispatchSem,
 	}
 	aliasReg := newTestHandleAliasRegistry(t)
 
@@ -3563,7 +3616,7 @@ func TestSlackEventsRegistryMissUsesEnvFallback(t *testing.T) {
 	req := signedSlackEventRequest(t, "env-fallback", envBody)
 	w := httptest.NewRecorder()
 
-	handleSlackEvents(cfg, aliasReg, nil, nil)(w, req)
+	handleSlackEvents(cfg, aliasReg, nil, nil, nil, nil)(w, req)
 
 	if w.Result().StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200 (env fallback must verify when registry misses)", w.Result().StatusCode)
@@ -3590,7 +3643,7 @@ func TestSlackEventsNoSecretRejects401(t *testing.T) {
 	req := signedSlackEventRequest(t, "anything", envBody)
 	w := httptest.NewRecorder()
 
-	handleSlackEvents(cfg, aliasReg, nil, nil)(w, req)
+	handleSlackEvents(cfg, aliasReg, nil, nil, nil, nil)(w, req)
 	if w.Result().StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", w.Result().StatusCode)
 	}
@@ -3615,7 +3668,7 @@ func TestSlackEventsMalformedBodyFallsBackToEnv(t *testing.T) {
 	req := signedSlackEventRequest(t, "env-secret", body)
 	w := httptest.NewRecorder()
 
-	handleSlackEvents(cfg, aliasReg, nil, nil)(w, req)
+	handleSlackEvents(cfg, aliasReg, nil, nil, nil, nil)(w, req)
 	// Verify passed (env fallback) but JSON decode of envelope failed.
 	if w.Result().StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 (malformed envelope after env-fallback verify)", w.Result().StatusCode)

@@ -139,7 +139,7 @@ func TestRoomLaunchDispatchSpawnOnMissCreatesSessionAndPostsFirstMessage(t *test
 	env := slackEventEnvelope{Type: "event_callback", Event: rawMsg, TeamID: "T1"}
 
 	var releases int32
-	processSlackEvent(cfg, aliasReg, threadReg, roomReg, env, func() { atomic.AddInt32(&releases, 1) })
+	processSlackEvent(cfg, aliasReg, threadReg, roomReg, nil, nil, env, func() { atomic.AddInt32(&releases, 1) })
 
 	// /v0/sessions POST observed.
 	if got := atomic.LoadInt32(&hits.sessionsCreate); got != 1 {
@@ -245,7 +245,7 @@ func TestRoomLaunchDispatchReuseOnHitSkipsCreateAndPostsToExistingSession(t *tes
 	})
 	env := slackEventEnvelope{Type: "event_callback", Event: rawMsg, TeamID: "T1"}
 
-	processSlackEvent(cfg, aliasReg, threadReg, roomReg, env, func() {})
+	processSlackEvent(cfg, aliasReg, threadReg, roomReg, nil, nil, env, func() {})
 
 	// No /v0/sessions POST on a thread hit.
 	if got := atomic.LoadInt32(&hits.sessionsCreate); got != 0 {
@@ -293,7 +293,7 @@ func TestRoomLaunchDispatchChannelNotEnabledEmitsActionableEphemeral(t *testing.
 	})
 	env := slackEventEnvelope{Type: "event_callback", Event: rawMsg, TeamID: "T1"}
 
-	processSlackEvent(cfg, aliasReg, threadReg, roomReg, env, func() {})
+	processSlackEvent(cfg, aliasReg, threadReg, roomReg, nil, nil, env, func() {})
 
 	if got := atomic.LoadInt32(&hits.sessionsCreate); got != 0 {
 		t.Errorf("/v0/sessions POSTs = %d, want 0", got)
@@ -344,7 +344,7 @@ func TestRoomLaunchDispatchSpawnFailureLeavesRegistryEmpty(t *testing.T) {
 	})
 	env := slackEventEnvelope{Type: "event_callback", Event: rawMsg, TeamID: "T1"}
 
-	processSlackEvent(cfg, aliasReg, threadReg, roomReg, env, func() {})
+	processSlackEvent(cfg, aliasReg, threadReg, roomReg, nil, nil, env, func() {})
 
 	// Registry should NOT cache a failure: AcquireOrCreate's contract
 	// (cby.5.1) returns the create-closure error and does not persist.
@@ -413,7 +413,7 @@ func TestRoomLaunchDispatchSaturationDropsAtOuterSlot(t *testing.T) {
 	req := signedSlackEventRequest(t, cfg.slackSigningKey, envBody)
 	w := httptest.NewRecorder()
 
-	handler := handleSlackEvents(cfg, aliasReg, threadReg, roomReg)
+	handler := handleSlackEvents(cfg, aliasReg, threadReg, roomReg, nil, nil)
 	handler(w, req)
 
 	// Slack always gets 200 (Slack-side retry suppression), but no
