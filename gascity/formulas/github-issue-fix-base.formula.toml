@@ -91,16 +91,9 @@ metadata = { "gc.run_target" = "gc.design-author" }
 description_file = "../assets/workflows/github-issue-fix-base/implementation-plan.md"
 
 [[steps]]
-id = "design"
-title = "Compatibility alias for generated implementation plan"
-needs = ["implementation-plan"]
-metadata = { "gc.run_target" = "gc.run-operator" }
-description_file = "../assets/workflows/github-issue-fix-base/design.md"
-
-[[steps]]
 id = "design-review"
 title = "Review approved implementation plan"
-needs = ["design"]
+needs = ["implementation-plan"]
 metadata = { "gc.run_target" = "gc.review-synthesizer" }
 expand = "github-issue-fix-design-review-work"
 description_file = "../assets/workflows/github-issue-fix-base/design-review.md"

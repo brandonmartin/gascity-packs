@@ -5,9 +5,10 @@ Mark the requirements artifact `status: approved` in both `interactive` and
 hardening explicitly and do not claim a confirmed bug fix. Current mode is
 {{mode}}.
 
-After writing the approved artifact, resolve the absolute path to
-`requirements.md` and publish it on the workflow root with
-`bd update <root-bead-id> --set-metadata gc.github.requirements_path=<absolute path>`.
-Downstream implementation-plan, design compatibility, and create-beads steps
-must read the artifact through `gc.github.requirements_path`, not by guessing a
-run directory.
+Read `gc.github.requirements_path` from workflow root metadata and write the
+approved artifact to that absolute path. Do not choose or invent a different
+path. If the metadata is missing or points outside the run directory, fail hard
+instead of guessing a run directory.
+
+Downstream implementation-plan, design-review, and create-beads steps must read
+the artifact through `gc.github.requirements_path`.

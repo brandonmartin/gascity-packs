@@ -588,45 +588,52 @@ class FormulaAssetTests(unittest.TestCase):
         self.assertIn("create beads", text.lower())
         self.assertNotIn("design_file", text)
 
-    def test_github_issue_fix_producers_publish_plan_artifact_metadata(self) -> None:
+    def test_github_issue_fix_run_setup_publishes_plan_artifact_metadata(self) -> None:
         root = pathlib.Path(__file__).resolve().parents[1]
         data = resolve_formula(root, "github-issue-fix")
         steps = {step["id"]: step for step in data["steps"]}
 
+        setup = node_description(root, steps["resume-or-create-run"])
         requirements = node_description(root, steps["generate-requirements"])
         implementation_plan = node_description(root, steps["implementation-plan"])
+        requirements_normalized = " ".join(requirements.split())
+        implementation_plan_normalized = " ".join(implementation_plan.split())
 
         for fragment in (
             "bd update <root-bead-id>",
+            "gc.github.run_dir",
             "gc.github.requirements_path",
+            "gc.github.implementation_plan_path",
+            "gc.github.design_path",
             "absolute path",
+        ):
+            with self.subTest(step="resume-or-create-run", fragment=fragment):
+                self.assertIn(fragment, setup)
+        for fragment in (
+            "gc.github.requirements_path",
+            "different path",
         ):
             with self.subTest(step="generate-requirements", fragment=fragment):
-                self.assertIn(fragment, requirements)
+                self.assertIn(fragment, requirements_normalized)
+        self.assertIn("Do not choose or invent", requirements)
         for fragment in (
-            "bd update <root-bead-id>",
             "gc.github.implementation_plan_path",
-            "absolute path",
+            "different path",
         ):
             with self.subTest(step="implementation-plan", fragment=fragment):
-                self.assertIn(fragment, implementation_plan)
+                self.assertIn(fragment, implementation_plan_normalized)
+        self.assertIn("Do not choose or invent", implementation_plan)
 
-    def test_github_issue_fix_preserves_layered_design_dependency_compatibility(self) -> None:
+    def test_github_issue_fix_reviews_implementation_plan_without_design_alias_step(self) -> None:
         root = pathlib.Path(__file__).resolve().parents[1]
         data = resolve_formula(root, "github-issue-fix")
         steps = {step["id"]: step for step in data["steps"]}
         step_ids = [step["id"] for step in data["steps"]]
 
-        self.assertLess(step_ids.index("implementation-plan"), step_ids.index("design"))
-        self.assertLess(step_ids.index("design"), step_ids.index("design-review"))
-        self.assertEqual(steps["design"]["needs"], ["implementation-plan"])
-        self.assertEqual(steps["design-review"]["needs"], ["design"])
-
-        design = node_description(root, steps["design"])
-        self.assertIn("compatibility alias", design)
-        self.assertIn("implementation-plan.md", design)
-        self.assertIn("gc.github.implementation_plan_path", design)
-        self.assertIn("Do not create `design.md`", design)
+        self.assertNotIn("design", steps)
+        self.assertLess(step_ids.index("implementation-plan"), step_ids.index("design-review"))
+        self.assertEqual(steps["design-review"]["needs"], ["implementation-plan"])
+        self.assertFalse((root / "assets" / "workflows" / "github-issue-fix-base" / "design.md").exists())
 
     def test_layered_github_issue_overrides_preserve_catalog_and_resolve(self) -> None:
         root = pathlib.Path(__file__).resolve().parents[1]
@@ -647,7 +654,7 @@ description = "Fix a GitHub issue with a local advanced design-review override."
 [[steps]]
 id = "design-review"
 title = "Run local advanced design review"
-needs = ["design"]
+needs = ["implementation-plan"]
 metadata = { "gc.run_target" = "gc.review-synthesizer" }
 description = "Override sink that preserves the base issue-fix protocol."
 """.lstrip(),
@@ -686,7 +693,7 @@ description = "Override sink that writes the base triage report contract."
             )
             self.assertEqual(
                 next(step for step in issue_fix["steps"] if step["id"] == "design-review")["needs"],
-                ["design"],
+                ["implementation-plan"],
             )
             for data in (issue_fix, issue_triage):
                 step_ids = {step["id"] for step in data["steps"]}
