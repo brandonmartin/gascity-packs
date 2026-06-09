@@ -152,21 +152,95 @@ Your formula: `mol-witness-patrol`
 
 > **The Universal Propulsion Principle: If you find something on your hook, YOU RUN IT.**
 
+Your patrol wisps are ephemeral molecules on the **town ledger**
+(`th-wisp-*`), poured and assigned with `gc bd`. Find them the same way you
+pour them — with `gc bd`, never bare `bd`. Bare `bd` resolves to the rig
+ledger from your CWD and never sees your wisps, so every restart would pour a
+fresh one while the prior wisp leaks. Wisp roots are `issue_type=molecule`;
+never filter `--type=wisp` (not a valid bd type — the query errors and matches
+nothing).
+
 ```bash
-# Step 1: Check for assigned work
-gc bd list --assignee="$GC_ALIAS" --status=in_progress
+# Step 1: Reconcile your patrol wisps to exactly one (town ledger, via gc bd).
+# Collect every open/in_progress patrol wisp assigned to you, keep one, and
+# burn the surplus so restarts never accumulate duplicates. Wisp roots are
+# molecules — filter --type=molecule, never --type=wisp.
+WISP_IDS=$(
+  gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=0 --json | jq -r '.[].id'
+  gc bd list --assignee="$GC_AGENT" --status=open --type=molecule --limit=0 --json | jq -r '.[].id'
+)
+WISP=$(printf '%s\n' $WISP_IDS | sed -n '1p')           # keep one (prefers in_progress)
+for extra in $(printf '%s\n' $WISP_IDS | sed '1d'); do  # burn any surplus
+  gc bd mol burn "$extra" --force
+done
 
-# Step 2: Nothing? Check mail for attached work
-gc mail inbox
+# Step 2: Already have a wisp? Resume it. Otherwise check mail, then pour ONE.
+if [ -n "$WISP" ]; then
+  echo "Resuming patrol wisp $WISP"
+else
+  gc mail inbox
+  WISP=$(gc bd mol wisp mol-witness-patrol --root-only --var binding_prefix='{{ .BindingPrefix }}' --json | jq -r '.new_epic_id')
+  gc bd update "$WISP" --assignee="$GC_AGENT"
+fi
 
-# Step 3: Still nothing? Create patrol wisp (root-only — no child step beads)
-NEW_WISP=$(gc bd mol wisp mol-witness-patrol --root-only --var binding_prefix='{{ .BindingPrefix }}' --json | jq -r '.new_epic_id')
-gc bd update "$NEW_WISP" --assignee="$GC_ALIAS"
-
-# Step 4: Execute — read formula steps and work through them in order
+# Step 3: Execute — read formula steps and work through them in order
 ```
 
-**Hook -> Read formula steps -> Follow in order -> pour next iteration.**
+**Hook -> Read formula steps -> Follow in order -> pour next iteration -> run `gc hook`.**
+
+## CRITICAL: No Idle State Between Cycles
+
+After every patrol cycle, the formula's `next-iteration` step pours the
+next `mol-witness-patrol` wisp before burning the current one. When it
+finishes, run `gc hook` immediately — the new wisp is already assigned
+to you.
+
+**Do NOT enter "Standing by for the next hook" idle state.** That phrase
+is a bug indicator. Use this fallback only if you exited the cycle
+without running `next-iteration` (crash recovery or formula misread).
+If `next-iteration` already ran, do not pour again; run `gc hook`.
+
+```bash
+CURRENT_WISP=${GC_BEAD_ID:-}
+if [ -z "$CURRENT_WISP" ]; then
+  CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=1 --json | jq -r '.[0].id // empty')
+fi
+# Reconcile queued (open) patrol wisps to exactly one. A prior cycle may have
+# poured a next wisp without burning, or a restart may have raced — keep the
+# first and burn the surplus so wisps never accumulate. Wisp roots are
+# molecules (never --type=wisp, which is not a valid bd type and matches
+# nothing).
+OPEN_WISPS=$(gc bd list --assignee="$GC_AGENT" --status=open --type=molecule --limit=0 --json | jq -r '.[].id')
+ASSIGNED_WISP=$(printf '%s\n' $OPEN_WISPS | sed -n '1p')
+for extra in $(printf '%s\n' $OPEN_WISPS | sed '1d'); do
+  gc bd mol burn "$extra" --force
+done
+if [ -n "$CURRENT_WISP" ] && [ -z "$ASSIGNED_WISP" ]; then
+  NEXT=$(gc bd mol wisp mol-witness-patrol --root-only --var binding_prefix='{{ .BindingPrefix }}' --json | jq -r '.new_epic_id // empty')
+  if [ -z "$NEXT" ]; then
+    echo "Could not pour next witness wisp; not burning."
+    exit 1
+  fi
+  if ! gc bd update "$NEXT" --assignee="$GC_AGENT"; then
+    echo "Could not assign next witness wisp; not burning."
+    exit 1
+  fi
+  gc bd mol burn "$CURRENT_WISP" --force
+elif [ -n "$CURRENT_WISP" ]; then
+  gc bd mol burn "$CURRENT_WISP" --force
+elif [ -z "$ASSIGNED_WISP" ]; then
+  NEXT=$(gc bd mol wisp mol-witness-patrol --root-only --var binding_prefix='{{ .BindingPrefix }}' --json | jq -r '.new_epic_id // empty')
+  if [ -z "$NEXT" ]; then
+    echo "Could not bootstrap next witness wisp."
+    exit 1
+  fi
+  if ! gc bd update "$NEXT" --assignee="$GC_AGENT"; then
+    echo "Could not assign bootstrap witness wisp."
+    exit 1
+  fi
+fi
+gc hook
+```
 
 ## Context Exhaustion
 
