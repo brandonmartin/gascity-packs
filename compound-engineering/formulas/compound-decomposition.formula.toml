@@ -1,0 +1,15 @@
+description = """
+Compound Engineering implementation of the decomposition-base methodology contract.
+"""
+formula = "compound-decomposition"
+version = 1
+contract = "graph.v2"
+extends = ["decomposition-base"]
+target_required = false
+internal = true
+
+[[steps]]
+id = "decompose"
+title = "Create Compound Engineering work convoy"
+metadata = { "gc.run_target" = "gc.task-decomposer" }
+description_file = "../assets/workflows/compound-decomposition/decompose.md"

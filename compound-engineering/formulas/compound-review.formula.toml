@@ -1,0 +1,24 @@
+description = """
+Compound Engineering implementation of the code-review-base methodology contract.
+"""
+formula = "compound-review"
+version = 1
+contract = "graph.v2"
+extends = ["code-review-base"]
+target_required = false
+internal = true
+mode = "report"
+
+[vars]
+[vars.implementation_target]
+description = "Compound Engineering task implementation role used for review fixes."
+default = "compound-engineering.ce-work"
+
+[[steps]]
+id = "write-report"
+title = "Run Compound Engineering review"
+needs = ["validate-context"]
+metadata = { "gc.run_target" = "compound-engineering.ce-code-review-synthesizer" }
+expand = "compound-code-review"
+expand_vars = { implementation_target = "{{implementation_target}}" }
+description_file = "../assets/workflows/compound-review/write-report.md"

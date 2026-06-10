@@ -1,0 +1,22 @@
+description = """
+Compound Engineering implementation of the fix-loop-base methodology contract.
+"""
+formula = "compound-fix-loop"
+version = 1
+contract = "graph.v2"
+extends = ["fix-loop-base"]
+target_required = false
+internal = true
+
+[vars]
+[vars.implementation_formula]
+description = "Compound Engineering implementation formula used for fix work."
+default = "compound-implementation"
+
+[vars.code_review_formula]
+description = "Compound Engineering review formula used after fixes."
+default = "compound-review"
+
+[vars.implementation_target]
+description = "Compound Engineering task implementation role."
+default = "compound-engineering.ce-work"

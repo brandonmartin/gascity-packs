@@ -1,0 +1,31 @@
+description = """
+Compound Engineering implementation of the planning-base methodology contract.
+"""
+formula = "compound-planning"
+version = 1
+contract = "graph.v2"
+extends = ["planning-base"]
+target_required = false
+internal = true
+
+[[steps]]
+id = "requirements"
+title = "Compound brainstorm requirements"
+needs = ["prepare-planning"]
+metadata = { "gc.run_target" = "compound-engineering.ce-brainstorm" }
+description_file = "../assets/workflows/compound-planning/requirements.md"
+
+[[steps]]
+id = "plan"
+title = "Compound plan"
+needs = ["requirements"]
+metadata = { "gc.run_target" = "compound-engineering.ce-plan" }
+description_file = "../assets/workflows/compound-planning/plan.md"
+
+[[steps]]
+id = "plan-review"
+title = "Compound plan review"
+needs = ["plan"]
+metadata = { "gc.run_target" = "compound-engineering.ce-plan-review-synthesizer" }
+expand = "compound-plan-review"
+description_file = "../assets/workflows/compound-planning/plan-review.md"

@@ -4,6 +4,12 @@ This pack implements the Gas City `build-base` workflow contract with vendored
 [Compound Engineering Plugin](https://github.com/EveryInc/compound-engineering-plugin)
 skills.
 
+The pack-local compatibility ledger lives at
+[`compound-engineering/REQUIREMENTS.md`](./REQUIREMENTS.md) and records the
+build-base contract proofs, including the inherited `gc` import, preserved
+anchor order, mode and drain declarations, persona-lane routing, and the
+evidence commands that reproduce each claim.
+
 ## What It Provides
 
 - Formula: `compound-build`
@@ -23,6 +29,13 @@ upstream plugin runtime. `ce-work` is an override of the inherited `do-work`
 implementation step; `ce-compound` is used during the `finalize` stage through
 `compound-resolution`; the base workflow does not add a separate compound
 stage.
+
+Compound review fanout is the pack's main showcase. The raw `ce-code-review`
+persona roster becomes sibling review beads with selector gates, synthesis, and
+an apply-fix lane. Use report-only adapter runs for GitHub PR review or other
+external comment workflows. Use interactive direct builds when you want the
+raw Compound feel: planning prompts, full review context, and review behavior
+that can apply safe fixes when the methodology permits it.
 
 ## End-to-End Flow
 
@@ -150,6 +163,12 @@ The post-implementation code-review lanes are real fan-out/fan-in graph work.
 The reviewer beads are siblings unless a lane has its own cheap selector gate;
 the synthesis bead is the fan-in barrier that waits for all required reviewer
 artifacts.
+
+For mode vocabulary, treat `interaction_mode` as the planning and human-gate
+axis, and `review_mode` as the review authority axis. Compound's raw
+`mode:agent` maps to machine handoff/report behavior, while default interactive
+review maps to a direct build where the reviewer is allowed to own safe fix
+application.
 
 ## Import It
 
