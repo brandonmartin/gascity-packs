@@ -8,6 +8,8 @@ Launch inputs:
 - plan_path: {{plan_path}}
 - decomposition_path: {{decomposition_path}}
 - drain_policy: {{drain_policy}}
+- interaction_mode: {{interaction_mode}}
+- review_mode: {{review_mode}}
 - implementation_target: {{implementation_target}}
 - planning_formula: {{planning_formula}}
 - decomposition_formula: {{decomposition_formula}}
@@ -20,6 +22,19 @@ Launch inputs:
 - open_pr: {{open_pr}}
 
 Validate the target, artifact root, and optional context inputs. Record the normalized artifact paths on the workflow root bead so later stages can reuse them without inventing new locations.
+
+Validate mode inputs against the methodology vocabulary before any stage runs:
+`interaction_mode` must be `interactive`, `autonomous`, or `headless`;
+`review_mode` must be `report`, `agent`, or `interactive`; `drain_policy` must
+be `separate` or `same-session`. The running formula's
+`[metadata.gc.methodology]` declares which of those values it supports. If a
+requested value is outside the vocabulary or unsupported by the formula's
+declared metadata, stop this workflow as blocked instead of starting work:
+record `gc.build.status=blocked` and a machine-readable
+`gc.blocked_reason` (for example `unsupported-interaction-mode:headless`) on
+the workflow root, then close this step with `gc.outcome=fail` and
+`gc.failure_class=methodology_incompatible`. In `headless` interaction mode,
+never ask questions; treat missing required input as the same blocked outcome.
 
 Record the selected methodology formulas as adapter inputs, not as behavior in
 this virtual contract. Entrypoint adapters may launch those formulas explicitly;

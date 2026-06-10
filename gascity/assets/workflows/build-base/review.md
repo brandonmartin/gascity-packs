@@ -5,6 +5,13 @@ test evidence. Treat gap-analysis as one review lens inside this
 post-implementation loop, not as a separate lifecycle stage. Findings must be
 actionable and tied to concrete files, commands, or artifact paths.
 
+The requested review authority is `review_mode` {{review_mode}}. In `report`
+mode, write findings and verdicts without mutating code. In `agent` mode, also
+produce a structured fix handoff (findings plus fix guidance) that the caller's
+review-fix formula applies; do not apply fixes from this stage. In
+`interactive` mode, safe fixes may be negotiated or applied, and every change
+and its reason must be recorded in the review artifact.
+
 Write the review report to the resolved review report path and record that path
 on the workflow root bead as `gc.build.review_report_path` before closing.
 

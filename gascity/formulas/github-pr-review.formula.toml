@@ -12,6 +12,9 @@ Launch inputs:
 - artifact_root: {{artifact_root}} (optional override; empty resolves to the
   rig artifact root with the pack artifact helper)
 - context_path: {{context_path}} (empty means no extra context bundle)
+- code_review_formula: {{code_review_formula}}
+- interaction_mode: {{interaction_mode}}
+- review_mode: {{review_mode}}
 - post_mode: {{post_mode}}
 """
 formula = "github-pr-review"
@@ -36,6 +39,18 @@ default = ""
 description = "Optional context bundle path to pass through to the generic review formula."
 default = ""
 
+[vars.code_review_formula]
+description = "Code-review methodology formula to launch after the PR snapshot is prepared."
+default = "review"
+
+[vars.interaction_mode]
+description = "Adapter interaction posture: interactive, autonomous, or headless. Headless runs must not require the human comment gate."
+default = "interactive"
+
+[vars.review_mode]
+description = "Review authority requested from the selected code-review formula: report, agent, or interactive. The PR adapter itself never mutates code."
+default = "report"
+
 [vars.post_mode]
 description = "Comment posting policy: human_gate or auto."
 default = "human_gate"
@@ -57,7 +72,7 @@ description_file = "../assets/workflows/github-pr-review/reuse-current-head.md"
 id = "run-review"
 title = "Run generic review"
 needs = ["reuse-current-head"]
-metadata = { "gc.run_target" = "gc.implementation-reviewer" }
+metadata = { "gc.run_target" = "gc.run-operator" }
 description_file = "../assets/workflows/github-pr-review/run-review.md"
 
 [[steps]]

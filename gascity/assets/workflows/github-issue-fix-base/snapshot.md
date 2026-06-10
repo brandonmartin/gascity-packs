@@ -1,9 +1,53 @@
 
 Resolved GitHub issue URL: {{github_issue_url}}
 Resolved artifact root override: {{artifact_root}} (empty means use the rig artifact root)
-Resolved mode: {{mode}}
+Resolved mode alias: {{mode}}
+Resolved interaction mode: {{interaction_mode}} (empty means normalize from the mode alias)
+Resolved review mode: {{review_mode}}
 Resolved PR mode: {{pr_mode}}
 Resolved drain policy: {{drain_policy}}
+
+Normalize the interaction mode before any other work. `mode` is only a
+backward-compatible alias: the effective interaction mode is
+`interaction_mode` when non-empty, otherwise `mode`. The effective value must
+be `interactive`, `autonomous`, or `headless`; `review_mode` must be `report`,
+`agent`, or `interactive`; `drain_policy` must be `separate` or
+`same-session`. Read the current step bead with `bd show <current-step-bead-id>
+--json`, take `gc.root_bead_id` (hard-fail if missing), and record the
+normalized value on the workflow root with
+`bd update <root-bead-id> --set-metadata gc.var.interaction_mode=<effective interaction mode>`.
+Downstream steps read `gc.var.interaction_mode`, never the raw alias.
+
+Methodology selector compatibility gate. For each selected formula —
+planning_formula {{planning_formula}}, decomposition_formula
+{{decomposition_formula}}, implementation_formula {{implementation_formula}},
+implementation_item_formula {{implementation_item_formula}},
+code_review_formula {{code_review_formula}}, and review_fix_formula
+{{review_fix_formula}} — read its declared compatibility metadata with
+`gc formula show <formula-name> --json` and inspect `[metadata.gc.methodology]`
+(`allowed_drain_policies`, `implementation_strategy`, `interaction_modes`,
+`review_modes`). Enforce, for every formula that declares the metadata:
+
+- the effective interaction mode is listed in `interaction_modes`;
+- the requested `review_mode` is listed in `review_modes` for the selected
+  code-review and review-fix formulas;
+- the implementation formula supports the requested drain policy:
+  `implementation_strategy = "drain"` requires {{drain_policy}} to be listed in
+  `allowed_drain_policies`, while `implementation_strategy = "convoy-step"` may
+  declare no drain policies and ignores `drain_policy`;
+- declared metadata uses only the allowed vocabulary above; unknown values fail
+  this gate.
+
+A selected formula with no `[metadata.gc.methodology]` declares no mode
+constraint and passes this gate. If any requested value is outside the
+vocabulary or unsupported by a selected formula, stop blocked before snapshot,
+triage, or planning work: record `gc.github.methodology_compat=blocked` and a
+machine-readable `gc.blocked_reason` (for example
+`unsupported-drain-policy:same-session-for:{{implementation_formula}}`) on the
+workflow root, then close this step with `gc.outcome=fail` and
+`gc.failure_class=methodology_incompatible`. In `headless` interaction mode,
+never ask questions; missing required input is the same blocked outcome.
+Otherwise record `gc.github.methodology_compat=ok` on the workflow root.
 
 Artifact root semantics:
 - Resolve the durable artifact root with

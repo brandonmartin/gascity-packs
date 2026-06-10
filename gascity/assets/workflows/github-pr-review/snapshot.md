@@ -2,7 +2,29 @@
 Resolved GitHub PR URL: {{github_pr_url}}
 Resolved artifact root override: {{artifact_root}} (empty means use the rig artifact root)
 Resolved context path: {{context_path}} (empty means no extra context bundle)
+Resolved code review formula: {{code_review_formula}}
+Resolved interaction mode: {{interaction_mode}}
+Resolved review mode: {{review_mode}}
 Resolved post mode: {{post_mode}}
+
+Methodology compatibility gate. Validate mode inputs before snapshot work:
+`interaction_mode` {{interaction_mode}} must be `interactive`, `autonomous`,
+or `headless`; `review_mode` {{review_mode}} must be `report`, `agent`, or
+`interactive`. Read the selected code-review formula's compatibility metadata
+with `gc formula show {{code_review_formula}} --json` and inspect
+`[metadata.gc.methodology]`. When the formula declares that metadata, the
+requested review mode must be listed in `review_modes` and the requested
+interaction mode must be listed in `interaction_modes`; declared metadata must
+use only the allowed vocabulary. A formula with no declared metadata passes
+this gate. In `headless` interaction mode, `post_mode` must not be
+`human_gate`: headless runs never wait on a human comment gate. If any check
+fails, stop blocked before snapshot work: record
+`gc.github.methodology_compat=blocked` and a machine-readable
+`gc.blocked_reason` (for example
+`unsupported-review-mode:{{review_mode}}-for:{{code_review_formula}}` or
+`headless-requires-post-mode:auto`) on the workflow root, then close this step
+with `gc.outcome=fail` and `gc.failure_class=methodology_incompatible`.
+Otherwise record `gc.github.methodology_compat=ok` on the workflow root.
 
 Artifact root semantics:
 - Resolve the durable artifact root with

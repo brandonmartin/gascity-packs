@@ -29,6 +29,14 @@ default = ""
 description = "Implementation plan artifact path to create or reuse."
 default = ""
 
+[vars.interaction_mode]
+description = "Planning interaction posture: interactive, autonomous, or headless."
+default = "interactive"
+
+[vars.review_mode]
+description = "Plan-review authority: report, agent, or interactive."
+default = "report"
+
 [[steps]]
 id = "prepare-planning"
 title = "Prepare planning context"

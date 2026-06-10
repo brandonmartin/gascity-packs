@@ -124,7 +124,14 @@ METHODOLOGY_STAGE_CONTRACTS = {
     "planning-base": {
         "steps": ["prepare-planning", "requirements", "plan", "plan-review"],
         "target_required": False,
-        "vars": {"artifact_root", "context_path", "requirements_path", "plan_path"},
+        "vars": {
+            "artifact_root",
+            "context_path",
+            "requirements_path",
+            "plan_path",
+            "interaction_mode",
+            "review_mode",
+        },
     },
     "decomposition-base": {
         "steps": ["decompose"],
@@ -144,7 +151,13 @@ METHODOLOGY_STAGE_CONTRACTS = {
     "code-review-base": {
         "steps": ["validate-context", "write-report"],
         "target_required": False,
-        "vars": {"context_path", "subject_path", "report_path"},
+        "vars": {
+            "context_path",
+            "subject_path",
+            "report_path",
+            "interaction_mode",
+            "review_mode",
+        },
         "mode": "report",
     },
     "fix-loop-base": {
@@ -168,6 +181,40 @@ METHODOLOGY_FORMULA_VARS = {
     "implementation_item_formula": "do-work-item",
     "code_review_formula": "review",
     "review_fix_formula": "fix-loop-base",
+}
+
+# Closed methodology metadata vocabulary; values outside these sets are
+# contract violations (GC-METH-BR-034).
+METHODOLOGY_METADATA_VOCABULARY = {
+    "allowed_drain_policies": {"separate", "same-session"},
+    "implementation_strategy": {"drain", "convoy-step"},
+    "interaction_modes": {"interactive", "autonomous", "headless"},
+    "review_modes": {"report", "agent", "interactive"},
+}
+
+# Top-level build formulas that must declare [metadata.gc.methodology]
+# (GC-METH-BR-033), keyed by formula name -> pack dir relative to packs root.
+TOP_LEVEL_BUILD_FORMULA_PACKS = {
+    "build-base": "gascity",
+    "build-basic": "gascity",
+    "compound-build": "compound-engineering",
+    "superpowers-build": "superpowers",
+    "bmad-build": "bmad",
+    "gstack-build": "gstack",
+}
+
+# Mode selector vars and their pinned defaults per formula
+# (GC-METH-BR-019..024). github-issue-fix-base interaction_mode defaults empty
+# because the snapshot step normalizes it from the backward-compatible `mode`
+# alias into workflow root metadata gc.var.interaction_mode.
+MODE_VAR_DEFAULTS = {
+    "build-base": {"interaction_mode": "interactive", "review_mode": "agent"},
+    "build-basic": {"interaction_mode": "interactive", "review_mode": "agent"},
+    "planning-base": {"interaction_mode": "interactive", "review_mode": "report"},
+    "code-review-base": {"interaction_mode": "autonomous", "review_mode": "report"},
+    "review": {"interaction_mode": "autonomous", "review_mode": "report"},
+    "github-issue-fix-base": {"interaction_mode": "", "review_mode": "agent"},
+    "github-pr-review": {"interaction_mode": "interactive", "review_mode": "report"},
 }
 
 BUILD_ARTIFACT_CHECK_SCRIPT = ".gc/scripts/checks/build-artifact-valid.sh"
@@ -782,11 +829,20 @@ class FormulaAssetTests(unittest.TestCase):
     def test_entrypoint_adapters_expose_methodology_formula_vars(self) -> None:
         root = pathlib.Path(__file__).resolve().parents[1]
         expected_by_formula = {
-            "build-base": METHODOLOGY_FORMULA_VARS,
+            "build-base": {
+                **METHODOLOGY_FORMULA_VARS,
+                "drain_policy": "separate",
+                **MODE_VAR_DEFAULTS["build-base"],
+            },
             "github-pr-review": {
                 "code_review_formula": METHODOLOGY_FORMULA_VARS["code_review_formula"],
+                **MODE_VAR_DEFAULTS["github-pr-review"],
             },
-            "github-issue-fix-base": METHODOLOGY_FORMULA_VARS,
+            "github-issue-fix-base": {
+                **METHODOLOGY_FORMULA_VARS,
+                "drain_policy": "separate",
+                **MODE_VAR_DEFAULTS["github-issue-fix-base"],
+            },
         }
         for name, expected_vars in expected_by_formula.items():
             data = load_formula(root, name)
@@ -796,6 +852,176 @@ class FormulaAssetTests(unittest.TestCase):
                     self.assertIn(var_name, data["vars"])
                     self.assertEqual(data["vars"][var_name]["default"], default)
                     self.assertIn(f"{{{{{var_name}}}}}", text)
+
+        alias = load_formula(root, "github-issue-fix-base")["vars"]["mode"]
+        self.assertEqual(alias["default"], "interactive")
+        self.assertIn("alias", alias["description"])
+        self.assertIn("gc.var.interaction_mode", alias["description"])
+
+    def test_top_level_build_formulas_declare_methodology_metadata(self) -> None:
+        gascity_root = pathlib.Path(__file__).resolve().parents[1]
+        packs_root = gascity_root.parent
+        for name, pack_dir in TOP_LEVEL_BUILD_FORMULA_PACKS.items():
+            with self.subTest(formula=name):
+                data = load_formula(packs_root / pack_dir, name)
+                methodology = data.get("metadata", {}).get("gc", {}).get("methodology")
+                self.assertIsNotNone(
+                    methodology,
+                    f"{name} must declare [metadata.gc.methodology]",
+                )
+                self.assertEqual(
+                    set(methodology),
+                    set(METHODOLOGY_METADATA_VOCABULARY),
+                )
+                self.assertEqual(methodology["implementation_strategy"], "drain")
+                self.assertEqual(
+                    methodology["allowed_drain_policies"],
+                    ["separate", "same-session"],
+                )
+                self.assertEqual(
+                    set(methodology["interaction_modes"]),
+                    METHODOLOGY_METADATA_VOCABULARY["interaction_modes"],
+                )
+                self.assertEqual(
+                    set(methodology["review_modes"]),
+                    METHODOLOGY_METADATA_VOCABULARY["review_modes"],
+                )
+
+    def test_methodology_metadata_uses_only_allowed_vocabulary(self) -> None:
+        gascity_root = pathlib.Path(__file__).resolve().parents[1]
+        packs_root = gascity_root.parent
+        pack_dirs = sorted(set(TOP_LEVEL_BUILD_FORMULA_PACKS.values()))
+        declaring = []
+        for pack_dir in pack_dirs:
+            for path in sorted((packs_root / pack_dir / "formulas").glob("*.formula.toml")):
+                data = tomllib.loads(path.read_text(encoding="utf-8"))
+                methodology = data.get("metadata", {}).get("gc", {}).get("methodology")
+                if methodology is None:
+                    continue
+                declaring.append((pack_dir, path.name))
+                with self.subTest(pack=pack_dir, formula=path.name):
+                    unknown_keys = set(methodology) - set(METHODOLOGY_METADATA_VOCABULARY)
+                    self.assertFalse(
+                        unknown_keys,
+                        f"unknown methodology metadata keys: {sorted(unknown_keys)}",
+                    )
+                    strategy = methodology.get("implementation_strategy")
+                    self.assertIn(
+                        strategy,
+                        METHODOLOGY_METADATA_VOCABULARY["implementation_strategy"],
+                    )
+                    drain_policies = methodology.get("allowed_drain_policies", [])
+                    self.assertLessEqual(
+                        set(drain_policies),
+                        METHODOLOGY_METADATA_VOCABULARY["allowed_drain_policies"],
+                    )
+                    if strategy != "convoy-step":
+                        self.assertTrue(
+                            drain_policies,
+                            "allowed_drain_policies may be empty only when "
+                            'implementation_strategy = "convoy-step"',
+                        )
+                    interaction_modes = methodology.get("interaction_modes", [])
+                    self.assertTrue(interaction_modes)
+                    self.assertLessEqual(
+                        set(interaction_modes),
+                        METHODOLOGY_METADATA_VOCABULARY["interaction_modes"],
+                    )
+                    review_modes = methodology.get("review_modes", [])
+                    self.assertTrue(review_modes)
+                    self.assertLessEqual(
+                        set(review_modes),
+                        METHODOLOGY_METADATA_VOCABULARY["review_modes"],
+                    )
+        for name, pack_dir in TOP_LEVEL_BUILD_FORMULA_PACKS.items():
+            self.assertIn((pack_dir, f"{name}.formula.toml"), declaring)
+
+    def test_methodology_mode_vars_have_valid_defaults(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        for name, expected_defaults in MODE_VAR_DEFAULTS.items():
+            resolved = resolve_formula(root, name)
+            text = effective_formula_text(root, name)
+            for var_name, default in expected_defaults.items():
+                with self.subTest(formula=name, var=var_name):
+                    self.assertIn(var_name, resolved["vars"])
+                    self.assertEqual(resolved["vars"][var_name]["default"], default)
+                    vocabulary = METHODOLOGY_METADATA_VOCABULARY[f"{var_name}s"]
+                    if default == "":
+                        # Only the issue-fix adapter alias normalization may
+                        # leave interaction_mode empty at launch.
+                        self.assertEqual(name, "github-issue-fix-base")
+                        self.assertEqual(var_name, "interaction_mode")
+                    else:
+                        self.assertIn(default, vocabulary)
+                    self.assertIn(f"{{{{{var_name}}}}}", text)
+
+    def test_github_adapters_validate_methodology_compatibility(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        issue_snapshot = (
+            root / "assets/workflows/github-issue-fix-base/snapshot.md"
+        ).read_text(encoding="utf-8")
+        for fragment in (
+            "gc.var.interaction_mode",
+            "gc formula show <formula-name> --json",
+            "[metadata.gc.methodology]",
+            "allowed_drain_policies",
+            "interaction_modes",
+            "review_modes",
+            "convoy-step",
+            "gc.github.methodology_compat=blocked",
+            "gc.blocked_reason",
+            "gc.failure_class=methodology_incompatible",
+            "never ask questions",
+        ):
+            with self.subTest(asset="github-issue-fix-base/snapshot.md", fragment=fragment):
+                self.assertIn(fragment, issue_snapshot)
+        for selector in METHODOLOGY_FORMULA_VARS:
+            with self.subTest(asset="github-issue-fix-base/snapshot.md", selector=selector):
+                self.assertIn(f"{{{{{selector}}}}}", issue_snapshot)
+
+        pr_snapshot = (
+            root / "assets/workflows/github-pr-review/snapshot.md"
+        ).read_text(encoding="utf-8")
+        for fragment in (
+            "gc formula show {{code_review_formula}} --json",
+            "[metadata.gc.methodology]",
+            "review_modes",
+            "interaction_modes",
+            "gc.github.methodology_compat=blocked",
+            "gc.blocked_reason",
+            "gc.failure_class=methodology_incompatible",
+            "headless",
+            "human_gate",
+        ):
+            with self.subTest(asset="github-pr-review/snapshot.md", fragment=fragment):
+                self.assertIn(fragment, pr_snapshot)
+
+        pr_run_review = (
+            root / "assets/workflows/github-pr-review/run-review.md"
+        ).read_text(encoding="utf-8")
+        for fragment in (
+            '--var interaction_mode="{{interaction_mode}}"',
+            '--var review_mode="{{review_mode}}"',
+        ):
+            with self.subTest(asset="github-pr-review/run-review.md", fragment=fragment):
+                self.assertIn(fragment, pr_run_review)
+
+        issue_build = (
+            root / "assets/workflows/github-issue-fix-base/build.md"
+        ).read_text(encoding="utf-8")
+        for fragment in ("gc.var.interaction_mode", "{{review_mode}}"):
+            with self.subTest(asset="github-issue-fix-base/build.md", fragment=fragment):
+                self.assertIn(fragment, issue_build)
+
+        prepare = (root / "assets/workflows/build-base/prepare.md").read_text(encoding="utf-8")
+        for fragment in (
+            "[metadata.gc.methodology]",
+            "gc.blocked_reason",
+            "gc.failure_class=methodology_incompatible",
+            "never ask questions",
+        ):
+            with self.subTest(asset="build-base/prepare.md", fragment=fragment):
+                self.assertIn(fragment, prepare)
 
     def test_build_base_is_full_lifecycle_virtual_contract(self) -> None:
         root = pathlib.Path(__file__).resolve().parents[1]
@@ -848,6 +1074,8 @@ class FormulaAssetTests(unittest.TestCase):
             "plan_path: {{plan_path}}",
             "decomposition_path: {{decomposition_path}}",
             "drain_policy: {{drain_policy}}",
+            "interaction_mode: {{interaction_mode}}",
+            "review_mode: {{review_mode}}",
             "implementation_target: {{implementation_target}}",
             "planning_formula: {{planning_formula}}",
             "decomposition_formula: {{decomposition_formula}}",
@@ -1817,6 +2045,8 @@ class FormulaAssetTests(unittest.TestCase):
                 pr_launch = {
                     "github_pr_url": "https://github.com/example/project/pull/123",
                     "code_review_formula": selectors["code_review_formula"],
+                    "interaction_mode": "autonomous",
+                    "review_mode": "report",
                 }
                 issue_launch = {
                     "github_issue_url": "https://github.com/example/project/issues/456",
@@ -1827,6 +2057,9 @@ class FormulaAssetTests(unittest.TestCase):
                     "code_review_formula": selectors["code_review_formula"],
                     "review_fix_formula": selectors["review_fix_formula"],
                     "implementation_target": implementation_target,
+                    "interaction_mode": "autonomous",
+                    "review_mode": "agent",
+                    "drain_policy": "separate",
                 }
                 for var_name in pr_launch:
                     self.assertIn(var_name, pr_adapter["vars"])
@@ -2550,7 +2783,17 @@ class FormulaAssetTests(unittest.TestCase):
         root = pathlib.Path(__file__).resolve().parents[1]
         expected = {
             "github-issue-triage": ("github_issue_url", {"artifact_root", "post_mode", "triage_rubric_path"}),
-            "github-pr-review": ("github_pr_url", {"artifact_root", "code_review_formula", "context_path", "post_mode"}),
+            "github-pr-review": (
+                "github_pr_url",
+                {
+                    "artifact_root",
+                    "code_review_formula",
+                    "context_path",
+                    "interaction_mode",
+                    "review_mode",
+                    "post_mode",
+                },
+            ),
             "github-issue-fix": (
                 "github_issue_url",
                 {
@@ -2558,6 +2801,8 @@ class FormulaAssetTests(unittest.TestCase):
                     "code_review_formula",
                     "decomposition_formula",
                     "mode",
+                    "interaction_mode",
+                    "review_mode",
                     "implementation_formula",
                     "implementation_item_formula",
                     "pr_mode",

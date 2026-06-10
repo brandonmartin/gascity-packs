@@ -1,11 +1,21 @@
 
+Selected decomposition methodology formula: {{decomposition_formula}}.
+
 Use the mayor create beads procedure over approved requirements and the
 implementation plan. In `interactive` mode, human-gate bead creation/start. In
 `autonomous` mode, generate and approve `tasks.md`, then create the task beads
-and implementation convoy non-interactively. Each issue-fix run owns one
-generated implementation convoy; review-fix passes remain iteration-specific.
-The `tasks.md` front matter must use `implementation_plan_file`. Current mode
-is {{mode}}.
+and implementation convoy non-interactively. In `headless` mode, behave like
+`autonomous` but never ask questions; if required input is missing, stop
+blocked with a machine-readable `gc.blocked_reason`. Each issue-fix run owns
+one generated implementation convoy; review-fix passes remain
+iteration-specific. The `tasks.md` front matter must use
+`implementation_plan_file`. The launch alias is mode {{mode}}; read the
+effective interaction mode from `gc.var.interaction_mode` on the workflow
+root.
+
+Concrete issue-fix wrappers may override this step to delegate to
+`{{decomposition_formula}}`, but the output must still be the implementation
+convoy consumed by the selected implementation formula.
 
 In `interactive` mode, use the passive wait + mail human gate pattern after
 writing `tasks.md` and before creating beads or starting the implementation

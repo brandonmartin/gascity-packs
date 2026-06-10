@@ -4,6 +4,11 @@ Read workflow root metadata, including `gc.github.review_report_path`,
 If `post_mode` {{post_mode}} is not `human_gate`, close this step as a no-op
 gate with metadata `gc.github.public_comment_gate=not_required`.
 
+In `headless` interaction mode ({{interaction_mode}} at launch), never wait on
+a human: the snapshot compatibility gate blocks `human_gate` post mode for
+headless runs, so reaching this step with both set means the gate was skipped.
+Stop blocked with a machine-readable `gc.blocked_reason` instead of waiting.
+
 If `post_mode` is `human_gate`, send the rendered review report and comment to
 the human gate using the passive wait + mail pattern. This is not a
 timeout-driven task.

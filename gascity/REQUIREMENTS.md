@@ -406,6 +406,13 @@ Each review attempt writes `reviews/attempt-<n>/report.md`. Each fix attempt
 writes `reviews/attempt-<n>/fixes.md`. The final report includes all attempts,
 verdicts, fixes, unresolved risks, and the terminal state.
 
+If review/fix cannot reach approval because evidence is missing, a drain failed,
+review returned `blocked`, report mode forbids mutation, or max iterations were
+exhausted, the workflow must preserve the failure as a healable restart state.
+It records `gc.build.repair_status`, `gc.restart.entrypoint`,
+`gc.restart.reason`, relevant artifact paths, and a failing workflow outcome
+rather than converting the run to pass during finalization or no-op publish.
+
 `fix-loop-base` owns the default implementation shape:
 
 - plan fixes from review findings;
@@ -525,7 +532,7 @@ Continuation bases are nested suffixes:
 | `build-from-plan-base` | approved requirements | produce plan and plan-review | `build-from-decompose-base` |
 | `build-from-decompose-base` | approved requirements, plan, and plan-review | create or adopt implementation convoy | `build-from-convoy-base` |
 | `build-from-convoy-base` | implementation convoy | drain implementation work and record evidence | `build-from-review-base` |
-| `build-from-review-base` | implementation evidence | review/fix, finalize, optionally publish | terminal |
+| `build-from-review-base` | implementation evidence | review, repair or restart handoff, finalize, optionally publish | terminal |
 
 Each suffix may be launched directly when its prerequisite inputs already
 exist. A suffix must not silently rerun skipped upstream stages. Concrete
@@ -771,6 +778,7 @@ Proof expectation: validation requires `workflow.formula`, `producer.formula`,
 | GC-METH-BR-014 | GC-METH-US-001 | WHEN the workflow finalizes, THE final report SHALL summarize requirements, plan, decomposition, implementation, review attempts, fixes, drift, risk, publish status, and next action. |
 | GC-METH-BR-015 | GC-METH-US-001 | WHEN publish is not explicitly authorized, THE publish stage SHALL no-op and record `not_published`. |
 | GC-METH-BR-016 | GC-METH-US-001 | WHEN publish is authorized, THE publish stage SHALL record push status, PR status, or a blocked publish reason. |
+| GC-METH-BR-051 | GC-METH-US-001 | IF review/fix cannot reach approval because evidence is missing, a drain failed, review is blocked, report mode forbids mutation, or maximum iterations are exhausted, THEN finalization SHALL record a failing blocked outcome plus `gc.build.repair_status` and `gc.restart.*` metadata rather than closing the workflow as pass; publish no-op SHALL preserve that outcome. |
 | GC-METH-BR-017 | GC-METH-TS-003 | WHEN a downstream artifact consumes an upstream artifact, THE downstream artifact SHALL record the upstream path and content hash or revision ID. |
 | GC-METH-BR-018 | GC-METH-TS-003 | IF upstream artifacts drift after downstream work starts, THEN review and finalization SHALL surface drift and SHALL NOT silently proceed. |
 | GC-METH-BR-019 | GC-METH-US-006 | WHEN `interaction_mode=interactive`, THE workflow MAY ask one material question at a time and SHALL include a recommendation. |
@@ -820,10 +828,10 @@ Proof expectation: validation requires `workflow.formula`, `producer.formula`,
 | GC-METH-005 | Requirements artifact shape | Requirements artifacts include the base sections, stable `SHALL` behavior requirements, example mapping, acceptance criteria, out-of-scope, and open questions. | `assets/workflows/build-basic/requirements.md`; this ledger |
 | GC-METH-006 | Traceability and drift | Downstream artifacts carry upstream paths and hashes, and review/finalization surface drift. | this ledger; future schema/gate tests |
 | GC-METH-007 | Review/fix loop | Review verdicts drive fix-loop iterations and per-attempt report/fix artifacts until approval, block, or maximum iterations. | `formulas/build-basic-review.formula.toml`; `formulas/fix-loop-base.formula.toml` |
-| GC-METH-008 | Mode handling | `interactive`, `autonomous`, and `headless` interaction modes plus `report`, `agent`, and `interactive` review modes remain distinct and are propagated through selectors. | this ledger; future metadata tests |
+| GC-METH-008 | Mode handling | `interactive`, `autonomous`, and `headless` interaction modes plus `report`, `agent`, and `interactive` review modes remain distinct and are propagated through selectors. | this ledger; `README.md`; `tests/test_formula_assets.py::FormulaAssetTests::test_entrypoint_adapters_expose_methodology_formula_vars` |
 | GC-METH-009 | Drain and convoy-step compatibility | Derived packs may declare supported drain policies or replace drains with a convoy-step implementation while preserving convoy evidence. | this ledger; derived pack formula metadata |
 | GC-METH-010 | Build-basic path-shadow overrides | `build-basic` exposes stable major prompt override paths and one override file per review lane. | this ledger; future override-registry tests |
-| GC-METH-011 | Methodology metadata | Top-level build formulas declare `[metadata.gc.methodology]`; GitHub adapters validate selected formula compatibility. | this ledger; future metadata lint/tests |
+| GC-METH-011 | Methodology metadata | Top-level build formulas declare `[metadata.gc.methodology]`; GitHub adapters validate selected formula compatibility. | this ledger; `formulas/build-base.formula.toml`; `README.md`; `tests/test_formula_assets.py::FormulaAssetTests::test_entrypoint_adapters_expose_methodology_formula_vars` |
 | GC-METH-012 | External implementation compatibility | Compound Engineering, Superpowers, BMAD, and gstack import this pack as `gc`, extend `build-base`, replace raw subagent dispatch with Gas City formulas/fanouts, and preserve base artifact/mode contracts. | `docs/design/build-methodology-framework-audit.md`; derived pack requirements to be added |
 | GC-METH-013 | Shared artifact validation | Formula-specific check steps invoke one shared validator after producer stages and route failed validation back for bounded repair. | this ledger; future schema/gate tests |
 | GC-METH-014 | Coverage matrix consistency | YAML coverage is authoritative, markdown coverage mirrors IDs/statuses, and all non-covered statuses include rationale. | this ledger; future schema/gate tests |

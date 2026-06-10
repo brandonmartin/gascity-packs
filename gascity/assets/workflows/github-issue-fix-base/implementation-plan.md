@@ -1,9 +1,19 @@
 
+Selected planning methodology formula: {{planning_formula}}.
+
 Use the mayor implementation-plan procedure over the approved generated
 requirements. In `interactive` mode, human-gate the implementation plan
 artifact. In `autonomous` mode, generate and approve the implementation plan
 non-interactively while recording the autonomous decision in the run artifacts.
-Current mode is {{mode}}.
+In `headless` mode, behave like `autonomous` but never ask questions; if
+required input is missing, stop blocked with a machine-readable
+`gc.blocked_reason`. The launch alias is mode {{mode}}; read the effective
+interaction mode from `gc.var.interaction_mode` on the workflow root.
+
+Concrete issue-fix wrappers may override this step to delegate to
+`{{planning_formula}}`, but they must still write the same
+`gc.github.implementation_plan_path` artifact and preserve the human-gate
+metadata protocol.
 
 Read `gc.github.implementation_plan_path` from workflow root metadata and write
 the approved artifact to that absolute path. Do not choose or invent a

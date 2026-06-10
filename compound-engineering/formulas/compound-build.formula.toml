@@ -15,10 +15,40 @@ target_required = true
 name = "compound-build"
 description = "Run build-base with vendored Compound Engineering brainstorm, plan, work, review, and compound finalization skills."
 
+[metadata.gc.methodology]
+allowed_drain_policies = ["separate", "same-session"]
+implementation_strategy = "drain"
+interaction_modes = ["interactive", "autonomous", "headless"]
+review_modes = ["report", "agent", "interactive"]
+
 [vars]
 [vars.implementation_target]
 description = "Compound Engineering task implementation role."
 default = "compound-engineering.ce-work"
+
+[vars.planning_formula]
+description = "Compound Engineering planning methodology formula."
+default = "compound-planning"
+
+[vars.decomposition_formula]
+description = "Compound Engineering decomposition methodology formula."
+default = "compound-decomposition"
+
+[vars.implementation_formula]
+description = "Compound Engineering implementation entry formula."
+default = "compound-implementation"
+
+[vars.implementation_item_formula]
+description = "Compound Engineering single-item implementation formula."
+default = "compound-work-item"
+
+[vars.code_review_formula]
+description = "Compound Engineering code-review methodology formula."
+default = "compound-review"
+
+[vars.review_fix_formula]
+description = "Compound Engineering review-fix methodology formula."
+default = "compound-fix-loop"
 
 [[steps]]
 id = "requirements"

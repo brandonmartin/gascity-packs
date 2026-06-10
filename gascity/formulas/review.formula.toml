@@ -5,6 +5,8 @@ Launch inputs:
 - context_path: {{context_path}} (empty means no extra context bundle)
 - subject_path: {{subject_path}}
 - report_path: {{report_path}}
+- interaction_mode: {{interaction_mode}}
+- review_mode: {{review_mode}}
 """
 formula = "review"
 version = 1
@@ -29,6 +31,14 @@ required = true
 [vars.report_path]
 description = "Path to write the review report."
 required = true
+
+[vars.interaction_mode]
+description = "Review interaction posture: interactive, autonomous, or headless."
+default = "autonomous"
+
+[vars.review_mode]
+description = "Review authority: report, agent, or interactive."
+default = "report"
 
 [[steps]]
 id = "validate-context"

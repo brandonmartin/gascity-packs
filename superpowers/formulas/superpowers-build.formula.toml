@@ -14,10 +14,40 @@ target_required = true
 name = "superpowers-build"
 description = "Run build-base with vendored Superpowers brainstorming, planning, execution, review, and finalization skills."
 
+[metadata.gc.methodology]
+allowed_drain_policies = ["separate", "same-session"]
+implementation_strategy = "drain"
+interaction_modes = ["interactive", "autonomous", "headless"]
+review_modes = ["report", "agent", "interactive"]
+
 [vars]
 [vars.implementation_target]
 description = "Superpowers task implementation role."
 default = "superpowers.implementer"
+
+[vars.planning_formula]
+description = "Superpowers planning methodology formula."
+default = "superpowers-planning"
+
+[vars.decomposition_formula]
+description = "Superpowers decomposition methodology formula."
+default = "superpowers-decomposition"
+
+[vars.implementation_formula]
+description = "Superpowers implementation entry formula."
+default = "superpowers-implementation"
+
+[vars.implementation_item_formula]
+description = "Superpowers single-item implementation formula."
+default = "superpowers-development-item"
+
+[vars.code_review_formula]
+description = "Superpowers code-review methodology formula."
+default = "superpowers-review"
+
+[vars.review_fix_formula]
+description = "Superpowers review-fix methodology formula."
+default = "superpowers-fix-loop"
 
 [vars.brainstorming_approval_mode]
 description = "Superpowers brainstorming approval mode: autonomous or interactive."

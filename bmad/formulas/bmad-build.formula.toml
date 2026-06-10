@@ -15,10 +15,40 @@ target_required = true
 name = "bmad-build"
 description = "Run build-base with vendored BMAD PRD, architecture, epics/stories, implementation readiness, implementation, and review skills."
 
+[metadata.gc.methodology]
+allowed_drain_policies = ["separate", "same-session"]
+implementation_strategy = "drain"
+interaction_modes = ["interactive", "autonomous", "headless"]
+review_modes = ["report", "agent", "interactive"]
+
 [vars]
 [vars.implementation_target]
 description = "BMAD task implementation role."
 default = "bmad.story-implementer"
+
+[vars.planning_formula]
+description = "BMAD planning methodology formula."
+default = "bmad-planning"
+
+[vars.decomposition_formula]
+description = "BMAD decomposition methodology formula."
+default = "bmad-decomposition"
+
+[vars.implementation_formula]
+description = "BMAD implementation entry formula."
+default = "bmad-implementation"
+
+[vars.implementation_item_formula]
+description = "BMAD single-item implementation formula."
+default = "bmad-story-development-item"
+
+[vars.code_review_formula]
+description = "BMAD code-review methodology formula."
+default = "bmad-review"
+
+[vars.review_fix_formula]
+description = "BMAD review-fix methodology formula."
+default = "bmad-fix-loop"
 
 [[steps]]
 id = "requirements"

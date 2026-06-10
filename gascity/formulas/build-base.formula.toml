@@ -12,6 +12,8 @@ Launch inputs:
 - plan_path: {{plan_path}}
 - decomposition_path: {{decomposition_path}}
 - drain_policy: {{drain_policy}}
+- interaction_mode: {{interaction_mode}}
+- review_mode: {{review_mode}}
 - implementation_target: {{implementation_target}}
 - planning_formula: {{planning_formula}}
 - decomposition_formula: {{decomposition_formula}}
@@ -28,6 +30,12 @@ version = 1
 contract = "graph.v2"
 target_required = true
 internal = true
+
+[metadata.gc.methodology]
+allowed_drain_policies = ["separate", "same-session"]
+implementation_strategy = "drain"
+interaction_modes = ["interactive", "autonomous", "headless"]
+review_modes = ["report", "agent", "interactive"]
 
 [vars]
 [vars.artifact_root]
@@ -53,6 +61,14 @@ default = ""
 [vars.drain_policy]
 description = "Implementation drain policy."
 default = "separate"
+
+[vars.interaction_mode]
+description = "Workflow interaction posture: interactive, autonomous, or headless."
+default = "interactive"
+
+[vars.review_mode]
+description = "Review authority: report, agent, or interactive."
+default = "agent"
 
 [vars.implementation_target]
 description = "Role target for implementation work."

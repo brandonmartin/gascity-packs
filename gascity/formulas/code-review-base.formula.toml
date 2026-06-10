@@ -25,6 +25,14 @@ required = true
 description = "Path to write the review report."
 required = true
 
+[vars.interaction_mode]
+description = "Review interaction posture: interactive, autonomous, or headless."
+default = "autonomous"
+
+[vars.review_mode]
+description = "Review authority: report, agent, or interactive."
+default = "report"
+
 [[steps]]
 id = "validate-context"
 title = "Validate report context"

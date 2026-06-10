@@ -25,14 +25,25 @@ instructions to review the PR diff/head for correctness, tests, security,
 maintainability, and release risk. Keep large payloads in artifact files; the
 subject may point to the snapshot instead of embedding it.
 
-Launch the generic targetless `review` formula with explicit paths:
+Launch the selected targetless code-review methodology formula with explicit
+paths. The default is `review`; toolkit adapters may override
+`code_review_formula` without changing GitHub snapshot, comment, or finalize
+behavior. Compatibility with the requested modes was validated at the snapshot
+gate. Pass review_mode {{review_mode}} and interaction_mode
+{{interaction_mode}} through when the selected formula accepts them; the PR
+adapter itself never mutates code regardless of review mode.
 
 ```bash
-gc sling gc.run-operator review --formula \
+gc sling gc.run-operator {{code_review_formula}} --formula \
   --var context_path="{{context_path}}" \
   --var subject_path="$SUBJECT_PATH" \
-  --var report_path="$REPORT_PATH"
+  --var report_path="$REPORT_PATH" \
+  --var interaction_mode="{{interaction_mode}}" \
+  --var review_mode="{{review_mode}}"
 ```
+
+If the selected formula does not declare the mode vars, omit the two mode
+`--var` arguments rather than failing the launch.
 
 Do not close this step until `REPORT_PATH` exists and validates through
 `{{pack_root}}/assets/scripts/github_reports.py review-outcome "$REPORT_PATH"`.
