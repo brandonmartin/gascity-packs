@@ -94,8 +94,16 @@ description_file = "../assets/workflows/implement/wait-for-drain.md"
 id = "summarize"
 title = "Write implementation summary"
 needs = ["wait-for-drain"]
-metadata = { "gc.run_target" = "gc.run-operator" }
+metadata = { "gc.run_target" = "gc.run-operator", "gc.build.artifact_schema" = "gc.build.implementation-summary.v1", "gc.build.artifact_path_keys" = "gc.implementation.summary_path,gc.var.summary_path" }
 description_file = "../assets/workflows/implement/summarize.md"
+
+[steps.check]
+max_attempts = 3
+
+[steps.check.check]
+mode = "exec"
+path = ".gc/scripts/checks/build-artifact-valid.sh"
+timeout = "5m"
 
 [[steps]]
 id = "publish"

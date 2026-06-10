@@ -1,17 +1,16 @@
 description = """
-Full lifecycle implementation formula for one implementation convoy or a core
-drain-unit convoy of size one.
+Virtual implementation methodology contract.
 
-Launch inputs:
-- context_path: {{context_path}} (empty means no extra context bundle)
-- implementation_target: {{implementation_target}}
-- summary_path: {{summary_path}} (empty means use the default item summary path)
+This methodology contract executes one implementation convoy or one
+drain-member source anchor and records the result. Concrete methodology packs
+override the implement step or add process-specific checks while preserving the
+source-anchor close contract.
 """
-formula = "do-work"
+formula = "implementation-base"
 version = 1
 contract = "graph.v2"
-extends = ["implementation-base"]
 target_required = true
+internal = true
 
 [vars]
 [vars.context_path]
@@ -30,14 +29,14 @@ default = ""
 id = "prepare-worktree"
 title = "Prepare item worktree"
 metadata = { "gc.run_target" = "gc.run-operator" }
-description_file = "../assets/workflows/do-work/prepare-worktree.md"
+description_file = "../assets/workflows/implementation-base/prepare-worktree.md"
 
 [[steps]]
 id = "implement"
 title = "Implement owned work"
 needs = ["prepare-worktree"]
 metadata = { "gc.run_target" = "{{implementation_target}}", "gc.build.artifact_schema" = "gc.build.implementation-summary.v1", "gc.build.artifact_path_keys" = "gc.implementation.summary_path,gc.build.implementation_summary_path,gc.var.summary_path" }
-description_file = "../assets/workflows/do-work/implement.md"
+description_file = "../assets/workflows/implementation-base/implement.md"
 
 [steps.check]
 max_attempts = 3
@@ -52,4 +51,4 @@ id = "close-source-anchor"
 title = "Close owned source anchor"
 needs = ["implement"]
 metadata = { "gc.run_target" = "gc.run-operator" }
-description_file = "../assets/workflows/do-work/close-source-anchor.md"
+description_file = "../assets/workflows/implementation-base/close-source-anchor.md"

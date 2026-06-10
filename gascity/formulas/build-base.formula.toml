@@ -13,6 +13,12 @@ Launch inputs:
 - decomposition_path: {{decomposition_path}}
 - drain_policy: {{drain_policy}}
 - implementation_target: {{implementation_target}}
+- planning_formula: {{planning_formula}}
+- decomposition_formula: {{decomposition_formula}}
+- implementation_formula: {{implementation_formula}}
+- implementation_item_formula: {{implementation_item_formula}}
+- code_review_formula: {{code_review_formula}}
+- review_fix_formula: {{review_fix_formula}}
 - max_iterations: {{max_iterations}}
 - push: {{push}}
 - open_pr: {{open_pr}}
@@ -52,6 +58,30 @@ default = "separate"
 description = "Role target for implementation work."
 default = "gc.implementation-worker"
 
+[vars.planning_formula]
+description = "Planning methodology formula used by adapters that delegate planning."
+default = "planning-base"
+
+[vars.decomposition_formula]
+description = "Decomposition methodology formula used by adapters that delegate task creation."
+default = "decomposition-base"
+
+[vars.implementation_formula]
+description = "Implementation methodology formula used by adapters that delegate implementation."
+default = "implement"
+
+[vars.implementation_item_formula]
+description = "Single-item implementation formula used by shared-drain adapters."
+default = "do-work-item"
+
+[vars.code_review_formula]
+description = "Code-review methodology formula used by adapters that delegate review."
+default = "review"
+
+[vars.review_fix_formula]
+description = "Review-fix methodology formula used after failed code-review findings."
+default = "fix-loop-base"
+
 [vars.max_iterations]
 description = "Maximum implementation/review fix attempts."
 default = "10"
@@ -74,15 +104,31 @@ description_file = "../assets/workflows/build-base/prepare.md"
 id = "requirements"
 title = "Produce requirements"
 needs = ["prepare"]
-metadata = { "gc.run_target" = "gc.requirements-planner" }
+metadata = { "gc.run_target" = "gc.requirements-planner", "gc.build.artifact_schema" = "gc.build.requirements.v1", "gc.build.artifact_path_keys" = "gc.build.requirements_path,gc.var.requirements_path" }
 description_file = "../assets/workflows/build-base/requirements.md"
+
+[steps.check]
+max_attempts = 3
+
+[steps.check.check]
+mode = "exec"
+path = ".gc/scripts/checks/build-artifact-valid.sh"
+timeout = "5m"
 
 [[steps]]
 id = "plan"
 title = "Produce implementation plan"
 needs = ["requirements"]
-metadata = { "gc.run_target" = "gc.design-author" }
+metadata = { "gc.run_target" = "gc.design-author", "gc.build.artifact_schema" = "gc.build.plan.v1", "gc.build.artifact_path_keys" = "gc.build.plan_path,gc.var.plan_path" }
 description_file = "../assets/workflows/build-base/plan.md"
+
+[steps.check]
+max_attempts = 3
+
+[steps.check.check]
+mode = "exec"
+path = ".gc/scripts/checks/build-artifact-valid.sh"
+timeout = "5m"
 
 [[steps]]
 id = "plan-review"
@@ -95,8 +141,16 @@ description_file = "../assets/workflows/build-base/plan-review.md"
 id = "decompose"
 title = "Decompose approved plan"
 needs = ["plan-review"]
-metadata = { "gc.run_target" = "gc.task-decomposer" }
+metadata = { "gc.run_target" = "gc.task-decomposer", "gc.build.artifact_schema" = "gc.build.decomposition.v1", "gc.build.artifact_path_keys" = "gc.build.decomposition_path,gc.var.decomposition_path" }
 description_file = "../assets/workflows/build-base/decompose.md"
+
+[steps.check]
+max_attempts = 3
+
+[steps.check.check]
+mode = "exec"
+path = ".gc/scripts/checks/build-artifact-valid.sh"
+timeout = "5m"
 
 [[steps]]
 id = "implement"
@@ -132,15 +186,31 @@ single_lane = true
 id = "review"
 title = "Review implementation"
 needs = ["implement", "implement-same-session"]
-metadata = { "gc.run_target" = "gc.implementation-reviewer" }
+metadata = { "gc.run_target" = "gc.implementation-reviewer", "gc.build.artifact_schema" = "gc.build.review.v1", "gc.build.artifact_path_keys" = "gc.build.review_report_path" }
 description_file = "../assets/workflows/build-base/review.md"
+
+[steps.check]
+max_attempts = 3
+
+[steps.check.check]
+mode = "exec"
+path = ".gc/scripts/checks/build-artifact-valid.sh"
+timeout = "5m"
 
 [[steps]]
 id = "finalize"
 title = "Finalize build result"
 needs = ["review"]
-metadata = { "gc.run_target" = "gc.run-operator" }
+metadata = { "gc.run_target" = "gc.run-operator", "gc.build.artifact_schema" = "gc.build.final-report.v1", "gc.build.artifact_path_keys" = "gc.build.final_report_path" }
 description_file = "../assets/workflows/build-base/finalize.md"
+
+[steps.check]
+max_attempts = 3
+
+[steps.check.check]
+mode = "exec"
+path = ".gc/scripts/checks/build-artifact-valid.sh"
+timeout = "5m"
 
 [[steps]]
 id = "publish"

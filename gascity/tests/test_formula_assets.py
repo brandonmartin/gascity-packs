@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import subprocess
 import tempfile
 import tomllib
@@ -11,10 +12,24 @@ import unittest
 FORMULAS = {
     "build-base",
     "build-basic",
+    "build-basic-review",
+    "build-from-convoy",
+    "build-from-convoy-base",
+    "build-from-decompose",
+    "build-from-decompose-base",
+    "build-from-plan",
+    "build-from-plan-base",
+    "build-from-requirements",
+    "build-from-requirements-base",
+    "build-from-review",
+    "build-from-review-base",
+    "code-review-base",
+    "decomposition-base",
     "design-review",
     "do-work",
     "do-work-item",
     "fix-convoy",
+    "fix-loop-base",
     "gap-analysis",
     "github-issue-fix",
     "github-issue-fix-base",
@@ -23,6 +38,9 @@ FORMULAS = {
     "github-issue-triage",
     "github-pr-review",
     "implement",
+    "implementation-base",
+    "implementation-item-base",
+    "planning-base",
     "publish",
     "review",
     "same-session-implement",
@@ -45,6 +63,11 @@ ROLE_AGENTS = {
 
 CATALOG_FORMULAS = {
     "build-basic",
+    "build-from-convoy",
+    "build-from-decompose",
+    "build-from-plan",
+    "build-from-requirements",
+    "build-from-review",
     "design-review",
     "gap-analysis",
     "github-issue-fix",
@@ -67,6 +90,137 @@ BUILD_BASE_STEPS = [
     "publish",
 ]
 
+BUILD_FROM_REVIEW_STEPS = {
+    "prepare-review",
+    "review",
+    "repair-review",
+    "finalize",
+    "publish",
+}
+
+BUILD_FROM_CONVOY_STEPS = BUILD_FROM_REVIEW_STEPS | {
+    "prepare-convoy",
+    "implement",
+    "implement-same-session",
+}
+
+BUILD_FROM_DECOMPOSE_STEPS = BUILD_FROM_CONVOY_STEPS | {
+    "prepare-decompose",
+    "decompose",
+}
+
+BUILD_FROM_PLAN_STEPS = BUILD_FROM_DECOMPOSE_STEPS | {
+    "prepare-plan",
+    "plan",
+    "plan-review",
+}
+
+BUILD_FROM_REQUIREMENTS_STEPS = BUILD_FROM_PLAN_STEPS | {
+    "prepare-requirements",
+    "requirements",
+}
+
+METHODOLOGY_STAGE_CONTRACTS = {
+    "planning-base": {
+        "steps": ["prepare-planning", "requirements", "plan", "plan-review"],
+        "target_required": False,
+        "vars": {"artifact_root", "context_path", "requirements_path", "plan_path"},
+    },
+    "decomposition-base": {
+        "steps": ["decompose"],
+        "target_required": False,
+        "vars": {"context_path", "plan_path", "decomposition_path"},
+    },
+    "implementation-base": {
+        "steps": ["prepare-worktree", "implement", "close-source-anchor"],
+        "target_required": True,
+        "vars": {"context_path", "implementation_target", "summary_path"},
+    },
+    "implementation-item-base": {
+        "steps": ["implement-item"],
+        "target_required": True,
+        "vars": {"context_path", "implementation_target"},
+    },
+    "code-review-base": {
+        "steps": ["validate-context", "write-report"],
+        "target_required": False,
+        "vars": {"context_path", "subject_path", "report_path"},
+        "mode": "report",
+    },
+    "fix-loop-base": {
+        "steps": ["plan-fixes", "apply-fixes", "re-review"],
+        "target_required": False,
+        "vars": {
+            "context_path",
+            "findings_path",
+            "implementation_formula",
+            "implementation_target",
+            "code_review_formula",
+            "max_iterations",
+        },
+    },
+}
+
+METHODOLOGY_FORMULA_VARS = {
+    "planning_formula": "planning-base",
+    "decomposition_formula": "decomposition-base",
+    "implementation_formula": "implement",
+    "implementation_item_formula": "do-work-item",
+    "code_review_formula": "review",
+    "review_fix_formula": "fix-loop-base",
+}
+
+BUILD_ARTIFACT_CHECK_SCRIPT = ".gc/scripts/checks/build-artifact-valid.sh"
+
+# One produce attempt plus two bounded schema-repair attempts per artifact stage.
+BUILD_ARTIFACT_GATE_MAX_ATTEMPTS = 3
+
+REQUIREMENTS_GATE = (
+    "gc.build.requirements.v1",
+    "gc.build.requirements_path,gc.var.requirements_path",
+)
+PLAN_GATE = ("gc.build.plan.v1", "gc.build.plan_path,gc.var.plan_path")
+DECOMPOSITION_GATE = (
+    "gc.build.decomposition.v1",
+    "gc.build.decomposition_path,gc.var.decomposition_path",
+)
+REVIEW_REPORT_GATE = (
+    "gc.build.review.v1",
+    "gc.build.review_report_path,gc.var.report_path",
+)
+FIX_LOOP_REVIEW_GATE = ("gc.build.review.v1", "gc.build.review_report_path")
+BUILD_REVIEW_GATE = ("gc.build.review.v1", "gc.build.review_report_path")
+FINAL_REPORT_GATE = ("gc.build.final-report.v1", "gc.build.final_report_path")
+ITEM_SUMMARY_GATE = (
+    "gc.build.implementation-summary.v1",
+    "gc.implementation.summary_path,gc.build.implementation_summary_path,gc.var.summary_path",
+)
+AGGREGATE_SUMMARY_GATE = (
+    "gc.build.implementation-summary.v1",
+    "gc.implementation.summary_path,gc.var.summary_path",
+)
+
+# Producer stages that must keep an explicit build-artifact validation gate.
+# Losing a row, the check wiring, or the repair bound is a contract regression.
+BUILD_ARTIFACT_VALIDATION_GATES = {
+    ("build-base", "requirements"): REQUIREMENTS_GATE,
+    ("build-base", "plan"): PLAN_GATE,
+    ("build-base", "decompose"): DECOMPOSITION_GATE,
+    ("build-base", "review"): BUILD_REVIEW_GATE,
+    ("build-base", "finalize"): FINAL_REPORT_GATE,
+    ("planning-base", "requirements"): REQUIREMENTS_GATE,
+    ("planning-base", "plan"): PLAN_GATE,
+    ("decomposition-base", "decompose"): DECOMPOSITION_GATE,
+    ("code-review-base", "write-report"): REVIEW_REPORT_GATE,
+    ("review", "write-report"): REVIEW_REPORT_GATE,
+    ("fix-loop-base", "re-review"): FIX_LOOP_REVIEW_GATE,
+    ("implementation-base", "implement"): ITEM_SUMMARY_GATE,
+    ("do-work", "implement"): ITEM_SUMMARY_GATE,
+    ("implementation-item-base", "implement-item"): ITEM_SUMMARY_GATE,
+    ("do-work-item", "implement-item"): ITEM_SUMMARY_GATE,
+    ("implement", "summarize"): AGGREGATE_SUMMARY_GATE,
+}
+
 THIRD_PARTY_BUILD_PACKS = {
     "compound-engineering": {
         "formula": "compound-build",
@@ -76,8 +230,13 @@ THIRD_PARTY_BUILD_PACKS = {
         "upstream": "https://github.com/EveryInc/compound-engineering-plugin",
         "commit": "b6250490bec4c0488d68ad66d72bd99f6edb95fd",
         "implementation_target": "compound-engineering.ce-work",
+        "planning_formula": "compound-planning",
+        "decomposition_formula": "compound-decomposition",
+        "implementation_entry_formula": "compound-implementation",
         "implementation_formula": "compound-work",
         "implementation_item_formula": "compound-work-item",
+        "code_review_entry_formula": "compound-review",
+        "review_fix_formula": "compound-fix-loop",
         "skills": {
             "requirements": "ce-brainstorm",
             "plan": "ce-plan",
@@ -125,8 +284,13 @@ THIRD_PARTY_BUILD_PACKS = {
         "upstream": "https://github.com/obra/superpowers",
         "commit": "6fd4507659784c351abbd2bc264c7162cfd386dc",
         "implementation_target": "superpowers.implementer",
+        "planning_formula": "superpowers-planning",
+        "decomposition_formula": "superpowers-decomposition",
+        "implementation_entry_formula": "superpowers-implementation",
         "implementation_formula": "superpowers-development",
         "implementation_item_formula": "superpowers-development-item",
+        "code_review_entry_formula": "superpowers-review",
+        "review_fix_formula": "superpowers-fix-loop",
         "skills": {
             "requirements": "brainstorming",
             "plan": "writing-plans",
@@ -160,8 +324,13 @@ THIRD_PARTY_BUILD_PACKS = {
         "upstream": "https://github.com/bmad-code-org/BMAD-METHOD",
         "commit": "072d0a74587ef1ea744d51f2dd4436ee2895758d",
         "implementation_target": "bmad.story-implementer",
+        "planning_formula": "bmad-planning",
+        "decomposition_formula": "bmad-decomposition",
+        "implementation_entry_formula": "bmad-implementation",
         "implementation_formula": "bmad-story-development",
         "implementation_item_formula": "bmad-story-development-item",
+        "code_review_entry_formula": "bmad-review",
+        "review_fix_formula": "bmad-fix-loop",
         "skills": {
             "requirements": "bmad-prd",
             "plan": "bmad-create-architecture",
@@ -179,7 +348,65 @@ THIRD_PARTY_BUILD_PACKS = {
         "gap_analysis_target": "bmad.story-self-checker",
         "review_fix_asset": "assets/workflows/bmad-code-review-flow/{target}.apply-bmad-review-findings.md",
     },
+    "gstack": {
+        "formula": "gstack-build",
+        "base_import_binding": "gc",
+        "base_import_source": "../gascity",
+        "vendor": "gstack",
+        "upstream": "https://github.com/garrytan/gstack",
+        "commit": "1626d4857bfe30da2690dd6a3217961934aa3192",
+        "implementation_target": "gstack.implementer",
+        "planning_formula": "gstack-planning",
+        "decomposition_formula": "gstack-decomposition",
+        "implementation_entry_formula": "gstack-implementation",
+        "implementation_formula": "gstack-work",
+        "implementation_item_formula": "gstack-work-item",
+        "code_review_entry_formula": "gstack-review",
+        "review_fix_formula": "gstack-fix-loop",
+        "skills": {
+            "requirements": "office-hours",
+            "plan": "autoplan",
+            "plan-review": "plan-eng-review",
+            "implement": "ship",
+            "review": "review",
+            "finalize": "land-and-deploy",
+        },
+        "extra_steps": ["qa", "release-readiness"],
+        "expansions": {
+            "plan-review": "gstack-plan-review",
+            "review": "gstack-code-review",
+            "qa": "gstack-qa-review",
+            "release-readiness": "gstack-release-readiness",
+        },
+        "review_expansion": "gstack-code-review",
+        "review_expand_vars": {
+            "review_mode": "{{review_mode}}",
+        },
+        "gap_analysis_target": "gstack.staff-reviewer",
+        "review_fix_asset": "assets/workflows/gstack-code-review/{target}.apply-review-findings.md",
+        "prompt_assets": {
+            "skills/plan-ceo-review/SKILL.md",
+            "skills/plan-design-review/SKILL.md",
+            "skills/plan-devex-review/SKILL.md",
+            "skills/qa/SKILL.md",
+            "skills/cso/SKILL.md",
+            "skills/document-release/SKILL.md",
+            "skills/investigate/SKILL.md",
+            "skills/spec/SKILL.md",
+        },
+    },
 }
+
+
+def methodology_selector_defaults(expected: dict) -> dict[str, str]:
+    return {
+        "planning_formula": expected["planning_formula"],
+        "decomposition_formula": expected["decomposition_formula"],
+        "implementation_formula": expected["implementation_entry_formula"],
+        "implementation_item_formula": expected["implementation_item_formula"],
+        "code_review_formula": expected["code_review_entry_formula"],
+        "review_fix_formula": expected["review_fix_formula"],
+    }
 
 
 def load_formula(root: pathlib.Path, name: str) -> dict:
@@ -495,6 +722,81 @@ class FormulaAssetTests(unittest.TestCase):
 
         self.assertEqual(catalog_names, CATALOG_FORMULAS)
 
+    def test_base_formula_requirements_cover_formula_set(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        pack_ledger = (root / "REQUIREMENTS.md").read_text(encoding="utf-8")
+        formula_ledger = (root / "formulas" / "REQUIREMENTS.md").read_text(encoding="utf-8")
+
+        self.assertIn("gc.build-methodology-base.requirements.v1", pack_ledger)
+        self.assertIn("gc.base-formulas.requirements.v1", formula_ledger)
+        for name in sorted(FORMULAS):
+            with self.subTest(formula=name):
+                self.assertRegex(
+                    formula_ledger,
+                    rf"\|\s*GC-BF-\d{{3}}\s*\|\s*`{re.escape(name)}`\s*\|",
+                )
+
+        for name in ("build-base", "build-basic", "planning-base", "fix-loop-base"):
+            with self.subTest(pack_ledger=name):
+                self.assertIn(name, pack_ledger)
+
+    def test_methodology_stage_contracts_are_virtual_and_shadowable(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        for name, expected in METHODOLOGY_STAGE_CONTRACTS.items():
+            with self.subTest(formula=name):
+                data = load_formula(root, name)
+                self.assertEqual(data["formula"], name)
+                self.assertEqual(data["contract"], "graph.v2")
+                self.assertTrue(data["internal"])
+                self.assertNotIn("catalog", data)
+                self.assertNotIn("extends", data)
+                self.assertEqual(data["target_required"], expected["target_required"])
+                self.assertEqual(set(data.get("vars", {})), expected["vars"])
+                self.assertEqual([step["id"] for step in data["steps"]], expected["steps"])
+                if "mode" in expected:
+                    self.assertEqual(data["mode"], expected["mode"])
+
+                text = effective_formula_text(root, name)
+                self.assertIn("methodology contract", text)
+                self.assertIn(name, text)
+                for step in data["steps"]:
+                    description = node_description(root, step)
+                    with self.subTest(formula=name, step=step["id"]):
+                        self.assertIn("override", description.lower())
+
+    def test_core_formulas_extend_smaller_methodology_contracts(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        expected_extends = {
+            "do-work": ["implementation-base"],
+            "do-work-item": ["implementation-item-base"],
+            "review": ["code-review-base"],
+        }
+        for name, parents in expected_extends.items():
+            with self.subTest(formula=name):
+                data = load_formula(root, name)
+                resolved = resolve_formula(root, name)
+                parent = load_formula(root, parents[0])
+                self.assertEqual(data["extends"], parents)
+                self.assertEqual([step["id"] for step in resolved["steps"]], [step["id"] for step in parent["steps"]])
+
+    def test_entrypoint_adapters_expose_methodology_formula_vars(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        expected_by_formula = {
+            "build-base": METHODOLOGY_FORMULA_VARS,
+            "github-pr-review": {
+                "code_review_formula": METHODOLOGY_FORMULA_VARS["code_review_formula"],
+            },
+            "github-issue-fix-base": METHODOLOGY_FORMULA_VARS,
+        }
+        for name, expected_vars in expected_by_formula.items():
+            data = load_formula(root, name)
+            text = effective_formula_text(root, name)
+            for var_name, default in expected_vars.items():
+                with self.subTest(formula=name, var=var_name):
+                    self.assertIn(var_name, data["vars"])
+                    self.assertEqual(data["vars"][var_name]["default"], default)
+                    self.assertIn(f"{{{{{var_name}}}}}", text)
+
     def test_build_base_is_full_lifecycle_virtual_contract(self) -> None:
         root = pathlib.Path(__file__).resolve().parents[1]
         data = load_formula(root, "build-base")
@@ -505,6 +807,8 @@ class FormulaAssetTests(unittest.TestCase):
         self.assertEqual([step["id"] for step in data["steps"]], BUILD_BASE_STEPS)
         self.assertNotIn("compound", BUILD_BASE_STEPS)
         self.assertEqual(data["vars"]["implementation_target"]["default"], "gc.implementation-worker")
+        for var_name, default in METHODOLOGY_FORMULA_VARS.items():
+            self.assertEqual(data["vars"][var_name]["default"], default)
 
         route_by_step = {step["id"]: step["metadata"]["gc.run_target"] for step in data["steps"]}
         self.assertEqual(route_by_step["prepare"], "gc.run-operator")
@@ -545,6 +849,12 @@ class FormulaAssetTests(unittest.TestCase):
             "decomposition_path: {{decomposition_path}}",
             "drain_policy: {{drain_policy}}",
             "implementation_target: {{implementation_target}}",
+            "planning_formula: {{planning_formula}}",
+            "decomposition_formula: {{decomposition_formula}}",
+            "implementation_formula: {{implementation_formula}}",
+            "implementation_item_formula: {{implementation_item_formula}}",
+            "code_review_formula: {{code_review_formula}}",
+            "review_fix_formula: {{review_fix_formula}}",
             "max_iterations: {{max_iterations}}",
             "push: {{push}}",
             "open_pr: {{open_pr}}",
@@ -557,6 +867,213 @@ class FormulaAssetTests(unittest.TestCase):
             with self.subTest(step="prepare", fragment=fragment):
                 self.assertIn(fragment, prepare_description)
 
+    def test_build_from_decompose_is_suffix_continuation_entrypoint(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        data = load_formula(root, "build-from-decompose")
+        resolved = resolve_formula(root, "build-from-decompose")
+
+        self.assertFalse(data["target_required"])
+        self.assertEqual(data["extends"], ["build-from-decompose-base"])
+        self.assertEqual(data["catalog"]["name"], "build-from-decompose")
+        self.assertEqual({step["id"] for step in resolved["steps"]}, BUILD_FROM_DECOMPOSE_STEPS)
+        self.assertNotIn("requirements", BUILD_FROM_DECOMPOSE_STEPS)
+        self.assertNotIn("plan", BUILD_FROM_DECOMPOSE_STEPS)
+        self.assertNotIn("plan-review", BUILD_FROM_DECOMPOSE_STEPS)
+
+        required_vars = {
+            "artifact_root",
+            "requirements_path",
+            "plan_path",
+            "plan_review_path",
+        }
+        for var_name in required_vars:
+            with self.subTest(var=var_name):
+                self.assertTrue(resolved["vars"][var_name]["required"])
+
+        expected_defaults = {
+            "context_path": "",
+            "decomposition_path": "",
+            "drain_policy": "separate",
+            "interaction_mode": "interactive",
+            "review_mode": "agent",
+            "implementation_target": "gc.implementation-worker",
+            "decomposition_formula": "decomposition-base",
+            "implementation_formula": "implement",
+            "implementation_item_formula": "do-work-item",
+            "code_review_formula": "review",
+            "review_fix_formula": "fix-loop-base",
+            "max_iterations": "10",
+            "push": "false",
+            "open_pr": "false",
+        }
+        for var_name, default in expected_defaults.items():
+            with self.subTest(var=var_name):
+                self.assertEqual(resolved["vars"][var_name]["default"], default)
+
+        steps = {step["id"]: step for step in resolved["steps"]}
+        self.assertEqual(steps["prepare-decompose"]["metadata"]["gc.run_target"], "gc.run-operator")
+        self.assertEqual(steps["decompose"]["metadata"]["gc.run_target"], "gc.task-decomposer")
+        self.assertEqual(steps["decompose"]["needs"], ["prepare-decompose"])
+        self.assertEqual(steps["prepare-convoy"]["needs"], ["decompose"])
+        self.assertEqual(steps["implement"]["needs"], ["prepare-convoy"])
+        self.assertEqual(steps["implement"]["condition"], "{{drain_policy}} == separate")
+        self.assertEqual(steps["implement"]["metadata"]["gc.run_target"], "{{implementation_target}}")
+        self.assertEqual(steps["implement"]["drain"]["context"], "separate")
+        self.assertEqual(steps["implement"]["drain"]["formula"], "do-work")
+        self.assertEqual(steps["implement"]["drain"]["member_access"], "exclusive")
+        self.assertEqual(steps["implement-same-session"]["needs"], ["prepare-convoy"])
+        self.assertEqual(steps["implement-same-session"]["condition"], "{{drain_policy}} == same-session")
+        self.assertEqual(steps["implement-same-session"]["metadata"]["gc.run_target"], "{{implementation_target}}")
+        self.assertEqual(steps["implement-same-session"]["drain"]["context"], "shared")
+        self.assertEqual(steps["implement-same-session"]["drain"]["formula"], "do-work-item")
+        self.assertEqual(steps["implement-same-session"]["drain"]["member_access"], "exclusive")
+        self.assertEqual(steps["implement-same-session"]["drain"]["on_item_failure"], "skip_remaining")
+        self.assertTrue(steps["implement-same-session"]["drain"]["item"]["single_lane"])
+        self.assertEqual(steps["prepare-review"]["needs"], ["implement", "implement-same-session"])
+        self.assertEqual(steps["review"]["needs"], ["prepare-review"])
+        self.assertEqual(steps["repair-review"]["needs"], ["review"])
+        self.assertEqual(steps["finalize"]["needs"], ["repair-review"])
+        self.assertEqual(steps["publish"]["needs"], ["finalize"])
+
+        text = effective_formula_text(root, "build-from-decompose")
+        for fragment in (
+            "continuation entrypoint",
+            "requirements_path: {{requirements_path}}",
+            "plan_path: {{plan_path}}",
+            "plan_review_path: {{plan_review_path}}",
+            "gc.input_convoy_id",
+            "implementation convoy",
+            "Do not rerun requirements, plan, or plan-review",
+            "code_review_formula: {{code_review_formula}}",
+            "review_fix_formula: {{review_fix_formula}}",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, text)
+
+    def test_build_from_decompose_base_is_reusable_suffix_contract(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        data = load_formula(root, "build-from-decompose-base")
+        resolved = resolve_formula(root, "build-from-decompose-base")
+
+        self.assertTrue(data["internal"])
+        self.assertFalse(data["target_required"])
+        self.assertNotIn("catalog", data)
+        self.assertEqual(data["extends"], ["build-from-convoy-base"])
+        self.assertEqual({step["id"] for step in resolved["steps"]}, BUILD_FROM_DECOMPOSE_STEPS)
+
+        for var_name in (
+            "decomposition_formula",
+            "implementation_formula",
+            "implementation_item_formula",
+            "code_review_formula",
+            "review_fix_formula",
+        ):
+            with self.subTest(var=var_name):
+                self.assertIn(var_name, resolved["vars"])
+
+        text = effective_formula_text(root, "build-from-decompose-base")
+        for fragment in (
+            "continuation entrypoint",
+            "concrete methodology packs extend this base",
+            "Do not rerun requirements, plan, or plan-review",
+            "gc.input_convoy_id",
+            "implementation convoy",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, text)
+
+    def test_build_continuation_bases_form_nested_suffix_chain(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        expected = {
+            "build-from-review-base": {
+                "extends": None,
+                "steps": BUILD_FROM_REVIEW_STEPS,
+            },
+            "build-from-convoy-base": {
+                "extends": ["build-from-review-base"],
+                "steps": BUILD_FROM_CONVOY_STEPS,
+            },
+            "build-from-decompose-base": {
+                "extends": ["build-from-convoy-base"],
+                "steps": BUILD_FROM_DECOMPOSE_STEPS,
+            },
+            "build-from-plan-base": {
+                "extends": ["build-from-decompose-base"],
+                "steps": BUILD_FROM_PLAN_STEPS,
+            },
+            "build-from-requirements-base": {
+                "extends": ["build-from-plan-base"],
+                "steps": BUILD_FROM_REQUIREMENTS_STEPS,
+            },
+        }
+        for formula, spec in expected.items():
+            with self.subTest(formula=formula):
+                data = load_formula(root, formula)
+                resolved = resolve_formula(root, formula)
+                self.assertTrue(data["internal"])
+                self.assertFalse(data["target_required"])
+                self.assertNotIn("catalog", data)
+                if spec["extends"] is None:
+                    self.assertNotIn("extends", data)
+                else:
+                    self.assertEqual(data["extends"], spec["extends"])
+                self.assertEqual({step["id"] for step in resolved["steps"]}, spec["steps"])
+
+        chain = resolve_formula(root, "build-from-requirements-base")
+        steps = {step["id"]: step for step in chain["steps"]}
+        self.assertEqual(steps["requirements"]["needs"], ["prepare-requirements"])
+        self.assertEqual(steps["prepare-plan"]["needs"], ["requirements"])
+        self.assertEqual(steps["plan"]["needs"], ["prepare-plan"])
+        self.assertEqual(steps["plan-review"]["needs"], ["plan"])
+        self.assertEqual(steps["prepare-decompose"]["needs"], ["plan-review"])
+        self.assertEqual(steps["decompose"]["needs"], ["prepare-decompose"])
+        self.assertEqual(steps["prepare-convoy"]["needs"], ["decompose"])
+        self.assertEqual(steps["implement"]["needs"], ["prepare-convoy"])
+        self.assertEqual(steps["implement-same-session"]["needs"], ["prepare-convoy"])
+        self.assertEqual(steps["prepare-review"]["needs"], ["implement", "implement-same-session"])
+        self.assertEqual(steps["review"]["needs"], ["prepare-review"])
+        self.assertEqual(steps["repair-review"]["needs"], ["review"])
+        self.assertEqual(steps["finalize"]["needs"], ["repair-review"])
+        self.assertEqual(steps["publish"]["needs"], ["finalize"])
+
+    def test_build_from_review_blocked_results_are_healable_not_passed(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        resolved = resolve_formula(root, "build-from-review-base")
+        steps = {step["id"]: step for step in resolved["steps"]}
+
+        self.assertEqual(steps["repair-review"]["metadata"]["gc.run_target"], "gc.run-operator")
+        self.assertEqual(steps["repair-review"]["description_file"], "../assets/workflows/build-from-review-base/repair-review.md")
+
+        text = effective_formula_text(root, "build-from-review-base")
+        for fragment in (
+            "review_mode=report",
+            "gc.build.repair_status",
+            "gc.restart.entrypoint",
+            "gc.restart.reason",
+            "gc.outcome=fail",
+            "Do not close the workflow root with `gc.outcome=pass`",
+            "Publishing disabled or no-op status must never convert",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, text)
+
+    def test_default_continuation_entrypoints_extend_suffix_bases(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        expected = {
+            "build-from-requirements": "build-from-requirements-base",
+            "build-from-plan": "build-from-plan-base",
+            "build-from-decompose": "build-from-decompose-base",
+            "build-from-convoy": "build-from-convoy-base",
+            "build-from-review": "build-from-review-base",
+        }
+        for formula, base in expected.items():
+            with self.subTest(formula=formula):
+                data = load_formula(root, formula)
+                self.assertEqual(data["extends"], [base])
+                self.assertFalse(data["target_required"])
+                self.assertEqual(data["catalog"]["name"], formula)
+                self.assertNotIn("internal", data)
+
     def test_build_basic_extends_full_lifecycle_base(self) -> None:
         root = pathlib.Path(__file__).resolve().parents[1]
         data = load_formula(root, "build-basic")
@@ -565,6 +1082,14 @@ class FormulaAssetTests(unittest.TestCase):
         self.assertEqual(data["extends"], ["build-base"])
         self.assertEqual([step["id"] for step in resolved["steps"]], BUILD_BASE_STEPS)
         self.assertEqual(data["catalog"]["name"], "build-basic")
+        review_step = next(step for step in data["steps"] if step["id"] == "review")
+        self.assertEqual(review_step["expand"], "build-basic-review")
+        self.assertEqual(
+            review_step["expand_vars"],
+            {
+                "implementation_target": "{{implementation_target}}",
+            },
+        )
         text = effective_formula_text(root, "build-basic")
         for fragment in (
             "generate-requirements",
@@ -572,6 +1097,8 @@ class FormulaAssetTests(unittest.TestCase):
             "design-review",
             "create-beads",
             "implementation summary path",
+            "guided starter factory",
+            "factory-run.md",
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, text)
@@ -587,6 +1114,105 @@ class FormulaAssetTests(unittest.TestCase):
         ):
             with self.subTest(step="decompose", fragment=fragment):
                 self.assertIn(fragment, decompose_description)
+
+    def test_build_basic_v2_uses_approachable_factory_techniques(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        review = load_formula(root, "build-basic-review")
+        self.assertEqual(review["type"], "expansion")
+        self.assertEqual(review["contract"], "graph.v2")
+        self.assertEqual(
+            review["vars"]["implementation_target"]["default"],
+            "gc.implementation-worker",
+        )
+
+        templates = {template["id"]: template for template in review["template"]}
+        loop = templates["{target}.build-basic-review-loop"]
+        self.assertEqual(
+            [child["id"] for child in loop["children"]],
+            [
+                "{target}.acceptance-review",
+                "{target}.test-evidence-review",
+                "{target}.simplicity-review",
+                "{target}.synthesize-review",
+                "{target}.apply-review-findings",
+            ],
+        )
+        for target in (
+            "gc.implementation-reviewer",
+            "gc.gap-analyst",
+            "gc.design-implementation-reviewer",
+        ):
+            with self.subTest(target=target):
+                self.assertIn(
+                    target,
+                    [
+                        child["metadata"]["gc.run_target"]
+                        for child in loop["children"]
+                        if child.get("metadata", {}).get("gc.run_target")
+                    ],
+                )
+        self.assertEqual(
+            loop["children"][-1]["metadata"]["gc.continuation_group"],
+            "build-basic-review-fixes",
+        )
+
+        asset_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted((root / "assets" / "workflows" / "build-basic-review").glob("*.md"))
+        )
+        for fragment in (
+            "starter factory",
+            "three review lanes",
+            "code_review.verdict=done|iterate",
+            "Do not invoke provider-native subagents",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, asset_text)
+
+        requirements_text = (root / "assets/workflows/build-basic/requirements.md").read_text(
+            encoding="utf-8"
+        )
+        for fragment in ("goal", "constraints", "acceptance criteria", "non-goals", "open questions"):
+            with self.subTest(asset="requirements", fragment=fragment):
+                self.assertIn(fragment, requirements_text)
+
+        plan_review_text = (root / "assets/workflows/build-basic/plan-review.md").read_text(
+            encoding="utf-8"
+        )
+        for fragment in (
+            "implementation readiness",
+            "requirements traceability",
+            "task boundaries",
+            "test commands",
+            "risk",
+        ):
+            with self.subTest(asset="plan-review", fragment=fragment):
+                self.assertIn(fragment, plan_review_text)
+
+        for relative_path in (
+            "assets/workflows/do-work/implement.md",
+            "assets/workflows/do-work-item/implement-item.md",
+        ):
+            text = (root / relative_path).read_text(encoding="utf-8")
+            for fragment in (
+                "intended behavior",
+                "first verification command",
+                "changed files",
+                "proof command",
+                "remaining risks",
+            ):
+                with self.subTest(asset=relative_path, fragment=fragment):
+                    self.assertIn(fragment, text)
+
+        finalize_text = (root / "assets/workflows/build-basic/finalize.md").read_text(encoding="utf-8")
+        for fragment in (
+            "factory-run.md",
+            "methodology",
+            "review lanes",
+            "next human action",
+        ):
+            with self.subTest(asset="finalize", fragment=fragment):
+                self.assertIn(fragment, finalize_text)
 
     def test_third_party_build_packs_extend_base_and_vendor_sources(self) -> None:
         gascity_root = pathlib.Path(__file__).resolve().parents[1]
@@ -605,6 +1231,9 @@ class FormulaAssetTests(unittest.TestCase):
                 self.assertEqual(data["formula"], formula_name)
                 self.assertEqual(data["catalog"]["name"], formula_name)
                 self.assertEqual(data["vars"]["implementation_target"]["default"], expected["implementation_target"])
+                for var_name, default in methodology_selector_defaults(expected).items():
+                    with self.subTest(pack=pack_name, var=var_name):
+                        self.assertEqual(resolved["vars"][var_name]["default"], default)
                 expected_steps = BUILD_BASE_STEPS + expected.get("extra_steps", [])
                 self.assertEqual([step["id"] for step in resolved["steps"]], expected_steps)
                 self.assertNotIn("compound", [step["id"] for step in resolved["steps"]])
@@ -650,11 +1279,13 @@ class FormulaAssetTests(unittest.TestCase):
                 self.assertTrue(step_by_id["implement-same-session"]["drain"]["item"]["single_lane"])
                 review_step = step_by_id["review"]
                 self.assertEqual(review_step["expand"], expected["review_expansion"])
+                expected_review_expand_vars = {
+                    "implementation_target": "{{implementation_target}}",
+                }
+                expected_review_expand_vars.update(expected.get("review_expand_vars", {}))
                 self.assertEqual(
                     review_step["expand_vars"],
-                    {
-                        "implementation_target": "{{implementation_target}}",
-                    },
+                    expected_review_expand_vars,
                 )
 
                 pack_data = tomllib.loads((pack_root / "pack.toml").read_text(encoding="utf-8"))
@@ -762,6 +1393,7 @@ class FormulaAssetTests(unittest.TestCase):
                             "verify-test-fails",
                             "implement-change",
                             "verify-test-passes",
+                            "task-review",
                             "record-item-result",
                             "close-source-anchor",
                         },
@@ -775,7 +1407,8 @@ class FormulaAssetTests(unittest.TestCase):
                             "verify-test-fails": ["write-failing-test"],
                             "implement-change": ["verify-test-fails"],
                             "verify-test-passes": ["implement-change"],
-                            "record-item-result": ["verify-test-passes"],
+                            "task-review": ["verify-test-passes"],
+                            "record-item-result": ["task-review"],
                             "close-source-anchor": ["record-item-result"],
                         },
                     )
@@ -837,6 +1470,7 @@ class FormulaAssetTests(unittest.TestCase):
                             "verify-test-fails",
                             "implement-change",
                             "verify-test-passes",
+                            "task-review",
                             "record-item-result",
                             "close-source-anchor",
                         },
@@ -849,7 +1483,8 @@ class FormulaAssetTests(unittest.TestCase):
                             "verify-test-fails": ["write-failing-test"],
                             "implement-change": ["verify-test-fails"],
                             "verify-test-passes": ["implement-change"],
-                            "record-item-result": ["verify-test-passes"],
+                            "task-review": ["verify-test-passes"],
+                            "record-item-result": ["task-review"],
                             "close-source-anchor": ["record-item-result"],
                         },
                     )
@@ -904,6 +1539,357 @@ class FormulaAssetTests(unittest.TestCase):
                 ]
                 self.assertEqual(gap_targets, [expected["gap_analysis_target"]])
 
+    def test_third_party_methodology_contract_wrappers_are_adapter_selectable(self) -> None:
+        gascity_root = pathlib.Path(__file__).resolve().parents[1]
+        packs_root = gascity_root.parent
+        for pack_name, expected in THIRD_PARTY_BUILD_PACKS.items():
+            pack_root = packs_root / pack_name
+            formula_dirs = [gascity_root / "formulas", pack_root / "formulas"]
+
+            planning = load_formula(pack_root, expected["planning_formula"])
+            with self.subTest(pack=pack_name, formula=expected["planning_formula"]):
+                self.assertEqual(planning["extends"], ["planning-base"])
+                self.assertFalse(planning["target_required"])
+                self.assertTrue(planning["internal"])
+                self.assertNotIn("catalog", planning)
+                resolved = resolve_formula_from_dirs(formula_dirs, expected["planning_formula"])
+                self.assertEqual(
+                    [step["id"] for step in resolved["steps"]],
+                    METHODOLOGY_STAGE_CONTRACTS["planning-base"]["steps"],
+                )
+
+            decomposition = load_formula(pack_root, expected["decomposition_formula"])
+            with self.subTest(pack=pack_name, formula=expected["decomposition_formula"]):
+                self.assertEqual(decomposition["extends"], ["decomposition-base"])
+                self.assertFalse(decomposition["target_required"])
+                self.assertTrue(decomposition["internal"])
+                resolved = resolve_formula_from_dirs(formula_dirs, expected["decomposition_formula"])
+                self.assertIn("decompose", [step["id"] for step in resolved["steps"]])
+                if pack_name == "bmad":
+                    self.assertIn("implementation-readiness", [step["id"] for step in resolved["steps"]])
+
+            implementation = load_formula(pack_root, expected["implementation_entry_formula"])
+            with self.subTest(pack=pack_name, formula=expected["implementation_entry_formula"]):
+                self.assertEqual(implementation["extends"], ["implement"])
+                self.assertTrue(implementation["target_required"])
+                self.assertTrue(implementation["internal"])
+                self.assertEqual(
+                    implementation["vars"]["implementation_target"]["default"],
+                    expected["implementation_target"],
+                )
+                steps = {step["id"]: step for step in implementation["steps"]}
+                self.assertEqual(steps["drain-separate"]["drain"]["formula"], expected["implementation_formula"])
+                self.assertEqual(
+                    steps["drain-same-session"]["drain"]["formula"],
+                    expected["implementation_item_formula"],
+                )
+
+            review = load_formula(pack_root, expected["code_review_entry_formula"])
+            with self.subTest(pack=pack_name, formula=expected["code_review_entry_formula"]):
+                self.assertEqual(review["extends"], ["code-review-base"])
+                self.assertFalse(review["target_required"])
+                self.assertTrue(review["internal"])
+                self.assertEqual(review["mode"], "report")
+                self.assertEqual(
+                    review["vars"]["implementation_target"]["default"],
+                    expected["implementation_target"],
+                )
+                write_report = next(step for step in review["steps"] if step["id"] == "write-report")
+                self.assertEqual(write_report["expand"], expected["review_expansion"])
+                expected_review_expand_vars = {
+                    "implementation_target": "{{implementation_target}}",
+                }
+                expected_review_expand_vars.update(expected.get("review_expand_vars", {}))
+                self.assertEqual(
+                    write_report["expand_vars"],
+                    expected_review_expand_vars,
+                )
+                text = effective_formula_text_from_dirs(formula_dirs, expected["code_review_entry_formula"])
+                for fragment in ("{{subject_path}}", "{{report_path}}", "{{context_path}}"):
+                    self.assertIn(fragment, text)
+
+            fix_loop = load_formula(pack_root, expected["review_fix_formula"])
+            with self.subTest(pack=pack_name, formula=expected["review_fix_formula"]):
+                self.assertEqual(fix_loop["extends"], ["fix-loop-base"])
+                self.assertFalse(fix_loop["target_required"])
+                self.assertTrue(fix_loop["internal"])
+                self.assertEqual(
+                    fix_loop["vars"]["implementation_formula"]["default"],
+                    expected["implementation_entry_formula"],
+                )
+                self.assertEqual(
+                    fix_loop["vars"]["code_review_formula"]["default"],
+                    expected["code_review_entry_formula"],
+                )
+                self.assertEqual(
+                    fix_loop["vars"]["implementation_target"]["default"],
+                    expected["implementation_target"],
+                )
+
+    def test_gstack_build_pack_models_garrytan_sprint_with_gascity_fanouts(self) -> None:
+        gascity_root = pathlib.Path(__file__).resolve().parents[1]
+        packs_root = gascity_root.parent
+        pack_root = packs_root / "gstack"
+        formula_dirs = [gascity_root / "formulas", pack_root / "formulas"]
+
+        build = load_formula(pack_root, "gstack-build")
+        resolved = resolve_formula_from_dirs(formula_dirs, "gstack-build")
+        step_by_id = {step["id"]: step for step in build["steps"]}
+
+        self.assertEqual(build["extends"], ["build-base"])
+        self.assertEqual([step["id"] for step in resolved["steps"]], BUILD_BASE_STEPS + ["qa", "release-readiness"])
+        self.assertEqual(build["vars"]["interaction_mode"]["default"], "interactive")
+        self.assertEqual(build["vars"]["review_mode"]["default"], "interactive")
+        self.assertEqual(step_by_id["requirements"]["metadata"]["gc.run_target"], "gstack.office-hours")
+        self.assertEqual(step_by_id["plan-review"]["expand"], "gstack-plan-review")
+        self.assertEqual(step_by_id["qa"]["expand"], "gstack-qa-review")
+        self.assertEqual(step_by_id["release-readiness"]["expand"], "gstack-release-readiness")
+        self.assertEqual(step_by_id["finalize"]["needs"], ["release-readiness"])
+
+        plan_review = load_formula(pack_root, "gstack-plan-review")
+        plan_loop = {
+            template["id"]: template
+            for template in plan_review["template"]
+        }["{target}.gstack-plan-review-loop"]
+        self.assertEqual(
+            [child["id"] for child in plan_loop["children"]],
+            [
+                "{target}.founder-scope-review",
+                "{target}.design-plan-review",
+                "{target}.engineering-plan-review",
+                "{target}.devex-plan-review",
+                "{target}.synthesize-plan-review",
+                "{target}.apply-plan-review-findings",
+            ],
+        )
+        for target in (
+            "gstack.founder-reviewer",
+            "gstack.design-reviewer",
+            "gstack.eng-reviewer",
+            "gstack.devex-reviewer",
+        ):
+            with self.subTest(expansion="plan-review", target=target):
+                self.assertIn(
+                    target,
+                    [child["metadata"]["gc.run_target"] for child in plan_loop["children"] if "gc.run_target" in child["metadata"]],
+                )
+        self.assertEqual(
+            plan_loop["children"][-1]["metadata"]["gc.continuation_group"],
+            "gstack-plan-review-fixes",
+        )
+
+        code_review = load_formula(pack_root, "gstack-code-review")
+        code_loop = {
+            template["id"]: template
+            for template in code_review["template"]
+        }["{target}.gstack-code-review-loop"]
+        self.assertEqual(
+            [child["id"] for child in code_loop["children"]],
+            [
+                "{target}.staff-code-review",
+                "{target}.qa-evidence-review",
+                "{target}.security-review",
+                "{target}.gap-analysis-review",
+                "{target}.synthesize-code-review",
+                "{target}.apply-review-findings",
+            ],
+        )
+        for target in (
+            "gstack.staff-reviewer",
+            "gstack.qa-lead",
+            "gstack.security-officer",
+        ):
+            with self.subTest(expansion="code-review", target=target):
+                self.assertIn(
+                    target,
+                    [child["metadata"]["gc.run_target"] for child in code_loop["children"] if "gc.run_target" in child["metadata"]],
+                )
+
+        qa = load_formula(pack_root, "gstack-qa-review")
+        qa_loop = {
+            template["id"]: template
+            for template in qa["template"]
+        }["{target}.gstack-qa-loop"]
+        self.assertEqual(
+            [child["id"] for child in qa_loop["children"]],
+            [
+                "{target}.browser-qa",
+                "{target}.regression-test-review",
+                "{target}.qa-fix-findings",
+                "{target}.synthesize-qa",
+            ],
+        )
+        self.assertEqual(
+            qa_loop["children"][2]["metadata"]["gc.continuation_group"],
+            "gstack-qa-fixes",
+        )
+
+        release = load_formula(pack_root, "gstack-release-readiness")
+        release_loop = {
+            template["id"]: template
+            for template in release["template"]
+        }["{target}.gstack-release-readiness-loop"]
+        self.assertEqual(
+            [child["id"] for child in release_loop["children"]],
+            [
+                "{target}.document-release",
+                "{target}.ship-readiness",
+                "{target}.deployment-readiness",
+                "{target}.synthesize-release-readiness",
+            ],
+        )
+
+        asset_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted((pack_root / "assets" / "workflows").glob("**/*.md"))
+        )
+        for fragment in (
+            "garrytan/gstack",
+            "Think -> Plan -> Build -> Review -> Test -> Ship -> Reflect",
+            "office-hours",
+            "plan-ceo-review",
+            "plan-eng-review",
+            "plan-design-review",
+            "plan-devex-review",
+            "review",
+            "qa",
+            "cso",
+            "ship",
+            "land-and-deploy",
+            "document-release",
+            "interaction_mode",
+            "review_mode",
+            "Do not invoke provider-native subagents",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, asset_text)
+
+        readme = (pack_root / "README.md").read_text(encoding="utf-8")
+        for fragment in (
+            "garrytan/gstack",
+            "`gstack-build`",
+            "Think -> Plan -> Build -> Review -> Test -> Ship -> Reflect",
+            "Gas City fanouts",
+            "`interaction_mode`",
+            "`review_mode`",
+        ):
+            with self.subTest(readme=fragment):
+                self.assertIn(fragment, readme)
+
+    def test_github_adapter_methodology_selector_matrix_covers_all_toolkits(self) -> None:
+        gascity_root = pathlib.Path(__file__).resolve().parents[1]
+        packs_root = gascity_root.parent
+        scenarios = {
+            "gascity": {
+                "formula_dirs": [gascity_root / "formulas"],
+                "selectors": METHODOLOGY_FORMULA_VARS,
+                "implementation_target": "gc.implementation-worker",
+                "separate_item_formula": "do-work",
+                "pack_root": gascity_root,
+            },
+        }
+        for pack_name, expected in THIRD_PARTY_BUILD_PACKS.items():
+            pack_root = packs_root / pack_name
+            scenarios[pack_name] = {
+                "formula_dirs": [gascity_root / "formulas", pack_root / "formulas"],
+                "selectors": methodology_selector_defaults(expected),
+                "implementation_target": expected["implementation_target"],
+                "separate_item_formula": expected["implementation_formula"],
+                "pack_root": pack_root,
+            }
+
+        for toolkit, scenario in scenarios.items():
+            with self.subTest(toolkit=toolkit):
+                formula_dirs = scenario["formula_dirs"]
+                selectors = scenario["selectors"]
+                implementation_target = scenario["implementation_target"]
+                separate_item_formula = scenario["separate_item_formula"]
+
+                pr_adapter = resolve_formula_from_dirs(formula_dirs, "github-pr-review")
+                issue_adapter = resolve_formula_from_dirs(formula_dirs, "github-issue-fix")
+                self.assertFalse(pr_adapter["target_required"])
+                self.assertFalse(issue_adapter["target_required"])
+                pr_routes = {step["id"]: step["metadata"]["gc.run_target"] for step in pr_adapter["steps"]}
+                issue_routes = {step["id"]: step["metadata"]["gc.run_target"] for step in issue_adapter["steps"]}
+                self.assertEqual(pr_routes["run-review"], "gc.run-operator")
+                self.assertEqual(issue_routes["build"], "gc.run-operator")
+
+                pr_launch = {
+                    "github_pr_url": "https://github.com/example/project/pull/123",
+                    "code_review_formula": selectors["code_review_formula"],
+                }
+                issue_launch = {
+                    "github_issue_url": "https://github.com/example/project/issues/456",
+                    "planning_formula": selectors["planning_formula"],
+                    "decomposition_formula": selectors["decomposition_formula"],
+                    "implementation_formula": selectors["implementation_formula"],
+                    "implementation_item_formula": selectors["implementation_item_formula"],
+                    "code_review_formula": selectors["code_review_formula"],
+                    "review_fix_formula": selectors["review_fix_formula"],
+                    "implementation_target": implementation_target,
+                }
+                for var_name in pr_launch:
+                    self.assertIn(var_name, pr_adapter["vars"])
+                for var_name in issue_launch:
+                    self.assertIn(var_name, issue_adapter["vars"])
+
+                planning = resolve_formula_from_dirs(formula_dirs, selectors["planning_formula"])
+                self.assertFalse(planning["target_required"])
+                self.assertEqual(
+                    [step["id"] for step in planning["steps"]],
+                    METHODOLOGY_STAGE_CONTRACTS["planning-base"]["steps"],
+                )
+
+                decomposition = resolve_formula_from_dirs(formula_dirs, selectors["decomposition_formula"])
+                self.assertFalse(decomposition["target_required"])
+                self.assertIn("decompose", [step["id"] for step in decomposition["steps"]])
+
+                implementation = resolve_formula_from_dirs(formula_dirs, selectors["implementation_formula"])
+                self.assertTrue(implementation["target_required"])
+                implementation_steps = {step["id"]: step for step in implementation["steps"]}
+                self.assertEqual(implementation_steps["drain-separate"]["drain"]["formula"], separate_item_formula)
+                self.assertEqual(
+                    implementation_steps["drain-same-session"]["drain"]["formula"],
+                    selectors["implementation_item_formula"],
+                )
+
+                implementation_item = resolve_formula_from_dirs(
+                    formula_dirs,
+                    selectors["implementation_item_formula"],
+                )
+                self.assertTrue(implementation_item["target_required"])
+                self.assertIn("implement-item", [step["id"] for step in implementation_item["steps"]])
+
+                code_review_raw = load_formula_from_dirs(formula_dirs, selectors["code_review_formula"])
+                code_review = resolve_formula_from_dirs(formula_dirs, selectors["code_review_formula"])
+                self.assertFalse(code_review_raw["target_required"])
+                self.assertEqual(code_review_raw["mode"], "report")
+                for var_name in ("context_path", "subject_path", "report_path"):
+                    self.assertIn(var_name, code_review["vars"])
+
+                fix_loop = resolve_formula_from_dirs(formula_dirs, selectors["review_fix_formula"])
+                self.assertFalse(fix_loop["target_required"])
+                self.assertEqual(
+                    fix_loop["vars"]["implementation_formula"]["default"],
+                    selectors["implementation_formula"],
+                )
+                self.assertEqual(
+                    fix_loop["vars"]["code_review_formula"]["default"],
+                    selectors["code_review_formula"],
+                )
+                self.assertEqual(fix_loop["vars"]["implementation_target"]["default"], implementation_target)
+
+                pr_text = effective_formula_text_from_dirs(formula_dirs, "github-pr-review")
+                issue_text = effective_formula_text_from_dirs(formula_dirs, "github-issue-fix")
+                self.assertIn("{{code_review_formula}}", pr_text)
+                for var_name in selectors:
+                    self.assertIn(f"{{{{{var_name}}}}}", issue_text)
+
+                if toolkit != "gascity":
+                    pack_root = scenario["pack_root"]
+                    self.assertFalse((pack_root / "formulas" / "github-pr-review.formula.toml").exists())
+                    self.assertFalse((pack_root / "formulas" / "github-issue-fix.formula.toml").exists())
+
     def test_superpowers_decomposition_keeps_procedure_in_drain_formula(self) -> None:
         packs_root = pathlib.Path(__file__).resolve().parents[2]
         pack_root = packs_root / "superpowers"
@@ -944,6 +1930,68 @@ class FormulaAssetTests(unittest.TestCase):
                 self.assertTrue(
                     all(group == "superpowers-task-{{issue}}" for group in continuation_groups)
                 )
+
+    def test_superpowers_development_converts_subagent_reviews_to_fanout(self) -> None:
+        packs_root = pathlib.Path(__file__).resolve().parents[2]
+        pack_root = packs_root / "superpowers"
+        formula_dirs = [packs_root / "gascity" / "formulas", pack_root / "formulas"]
+        review = load_formula(pack_root, "superpowers-task-review")
+
+        self.assertEqual(review["type"], "expansion")
+        templates = {template["id"]: template for template in review["template"]}
+        loop = templates["{target}.superpowers-task-review-loop"]
+        self.assertEqual(
+            [child["id"] for child in loop["children"]],
+            [
+                "{target}.spec-compliance-review",
+                "{target}.apply-spec-compliance-findings",
+                "{target}.code-quality-review",
+                "{target}.apply-code-quality-findings",
+            ],
+        )
+        self.assertEqual(
+            loop["children"][0]["metadata"]["gc.run_target"],
+            "superpowers.spec-reviewer",
+        )
+        self.assertEqual(
+            loop["children"][2]["metadata"]["gc.run_target"],
+            "superpowers.code-quality-reviewer",
+        )
+        self.assertEqual(
+            loop["children"][3]["metadata"]["gc.continuation_group"],
+            "superpowers-item-quality-fixes",
+        )
+
+        for formula_name, review_step_id in (
+            ("superpowers-development", "task-review"),
+            ("superpowers-development-item", "task-review"),
+        ):
+            with self.subTest(formula=formula_name):
+                text = effective_formula_text_from_dirs(formula_dirs, formula_name)
+                self.assertIn('expand = "superpowers-task-review"', text)
+                self.assertIn(
+                    'expand_vars = { implementation_target = "{{implementation_target}}" }',
+                    text,
+                )
+                formula = load_formula(pack_root, formula_name)
+                steps = {step["id"]: step for step in formula["steps"]}
+                self.assertIn(review_step_id, steps)
+                self.assertEqual(steps[review_step_id]["needs"], ["verify-test-passes"])
+                self.assertEqual(steps["record-item-result"]["needs"], [review_step_id])
+
+        asset_root = pack_root / "assets" / "workflows" / "superpowers-task-review"
+        asset_text = "\n".join(
+            path.read_text(encoding="utf-8") for path in sorted(asset_root.glob("*.md"))
+        )
+        for fragment in (
+            "Gas City fanout lane",
+            "Do not invoke provider-native subagents",
+            "spec compliance",
+            "code quality",
+            "code_review.verdict=done|iterate",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, asset_text)
 
     def test_superpowers_brainstorming_expansion_preserves_stock_loops(self) -> None:
         packs_root = pathlib.Path(__file__).resolve().parents[2]
@@ -1193,6 +2241,49 @@ class FormulaAssetTests(unittest.TestCase):
                 self.assertIn(f'formula = "{expected["implementation_formula"]}"', build_text)
                 self.assertIn(f'formula = "{expected["implementation_item_formula"]}"', build_text)
 
+    def test_methodology_readmes_explain_modes_and_fanout_conversion(self) -> None:
+        packs_root = pathlib.Path(__file__).resolve().parents[2]
+        root_readme = (packs_root / "README.md").read_text(encoding="utf-8")
+        gascity_readme = (packs_root / "gascity" / "README.md").read_text(encoding="utf-8")
+
+        for fragment in (
+            "Raw-framework subagents become Gas City fanouts",
+            "`interaction_mode`",
+            "`review_mode`",
+        ):
+            with self.subTest(readme="root", fragment=fragment):
+                self.assertIn(fragment, root_readme)
+            with self.subTest(readme="gascity", fragment=fragment):
+                self.assertIn(fragment, gascity_readme)
+
+        pack_expectations = {
+            "superpowers": (
+                "Superpowers task review",
+                "`superpowers-task-review`",
+                "spec-compliance and code-quality fanout lanes",
+            ),
+            "compound-engineering": (
+                "Compound review fanout",
+                "report-only adapter runs",
+                "interactive direct builds",
+            ),
+            "bmad": (
+                "BMAD structured steps",
+                "step-file discipline",
+                "fanout lanes",
+            ),
+            "gstack": (
+                "garrytan/gstack sprint",
+                "`gstack-build`",
+                "Gas City fanouts",
+            ),
+        }
+        for pack_name, fragments in pack_expectations.items():
+            text = (packs_root / pack_name / "README.md").read_text(encoding="utf-8")
+            for fragment in fragments:
+                with self.subTest(pack=pack_name, fragment=fragment):
+                    self.assertIn(fragment, text)
+
     def test_build_methodology_assets_do_not_prompt_formula_launch_or_path_skills(self) -> None:
         gascity_root = pathlib.Path(__file__).resolve().parents[1]
         packs_root = gascity_root.parent
@@ -1338,6 +2429,7 @@ class FormulaAssetTests(unittest.TestCase):
         root = pathlib.Path(__file__).resolve().parents[1]
 
         do_work = tomllib.loads((root / "formulas" / "do-work.formula.toml").read_text(encoding="utf-8"))
+        self.assertEqual(do_work["extends"], ["implementation-base"])
         self.assertNotIn("infra_target", do_work["vars"])
         self.assertNotIn("hard_target", do_work["vars"])
         self.assertEqual(do_work["vars"]["implementation_target"]["default"], "gc.implementation-worker")
@@ -1346,6 +2438,7 @@ class FormulaAssetTests(unittest.TestCase):
         self.assertEqual(do_work["steps"][2]["metadata"]["gc.run_target"], "gc.run-operator")
 
         do_work_item = tomllib.loads((root / "formulas" / "do-work-item.formula.toml").read_text(encoding="utf-8"))
+        self.assertEqual(do_work_item["extends"], ["implementation-item-base"])
         self.assertNotIn("infra_target", do_work_item["vars"])
         self.assertNotIn("hard_target", do_work_item["vars"])
         self.assertEqual(do_work_item["vars"]["implementation_target"]["default"], "gc.implementation-worker")
@@ -1411,7 +2504,7 @@ class FormulaAssetTests(unittest.TestCase):
         self.assertEqual(route_by_step["implementation-plan"], "gc.design-author")
         self.assertEqual(route_by_step["design-review"], "gc.review-synthesizer")
         self.assertEqual(route_by_step["create-beads"], "gc.task-decomposer")
-        self.assertEqual(route_by_step["build"], "{{implementation_target}}")
+        self.assertEqual(route_by_step["build"], "gc.run-operator")
         self.assertEqual(route_by_step["publish-pr"], "gc.publisher")
         self.assertEqual(route_by_step["finalize"], "gc.run-operator")
 
@@ -1457,15 +2550,21 @@ class FormulaAssetTests(unittest.TestCase):
         root = pathlib.Path(__file__).resolve().parents[1]
         expected = {
             "github-issue-triage": ("github_issue_url", {"artifact_root", "post_mode", "triage_rubric_path"}),
-            "github-pr-review": ("github_pr_url", {"artifact_root", "context_path", "post_mode"}),
+            "github-pr-review": ("github_pr_url", {"artifact_root", "code_review_formula", "context_path", "post_mode"}),
             "github-issue-fix": (
                 "github_issue_url",
                 {
                     "artifact_root",
+                    "code_review_formula",
+                    "decomposition_formula",
                     "mode",
+                    "implementation_formula",
+                    "implementation_item_formula",
                     "pr_mode",
+                    "planning_formula",
                     "drain_policy",
                     "implementation_target",
+                    "review_fix_formula",
                 },
             ),
         }
@@ -1547,7 +2646,7 @@ class FormulaAssetTests(unittest.TestCase):
         for fragment in (
             "SUBJECT_PATH=<gc.github.review_dir>/subject.md",
             "REPORT_PATH=<gc.github.review_dir>/review-report.md",
-            "gc sling gc.run-operator review --formula",
+            "gc sling gc.run-operator {{code_review_formula}} --formula",
             "--var subject_path=\"$SUBJECT_PATH\"",
             "--var report_path=\"$REPORT_PATH\"",
             "review-outcome \"$REPORT_PATH\"",
@@ -1867,13 +2966,207 @@ description = "Override sink that writes the base triage report contract."
 
         self.assertEqual(
             [script.name for script in scripts],
-            ["design-review-approved.sh", "gap-analysis-approved.sh", "implementation-review-approved.sh"],
+            [
+                "build-artifact-valid.sh",
+                "design-review-approved.sh",
+                "gap-analysis-approved.sh",
+                "implementation-review-approved.sh",
+            ],
         )
         for script in scripts:
             text = script.read_text(encoding="utf-8")
             self.assertTrue(os.access(script, os.X_OK), f"{script} must be executable")
             self.assertNotIn("/data/projects", text)
             self.assertNotIn("gascity-packs-worktrees", text)
+
+    def test_producer_stages_gate_artifacts_with_bounded_repair(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+
+        for (formula_name, step_id), (schema, path_keys) in BUILD_ARTIFACT_VALIDATION_GATES.items():
+            with self.subTest(formula=formula_name, step=step_id):
+                formula = load_formula(root, formula_name)
+                steps = {step["id"]: step for step in formula["steps"]}
+                self.assertIn(step_id, steps, f"{formula_name} lost producer step {step_id}")
+                step = steps[step_id]
+
+                self.assertIn(
+                    "check",
+                    step,
+                    f"{formula_name}.{step_id} lost its build-artifact validation gate",
+                )
+                self.assertEqual(
+                    step["check"]["max_attempts"],
+                    BUILD_ARTIFACT_GATE_MAX_ATTEMPTS,
+                    f"{formula_name}.{step_id} must keep one produce plus two bounded repair attempts",
+                )
+                self.assertEqual(
+                    step["check"]["check"],
+                    {
+                        "mode": "exec",
+                        "path": BUILD_ARTIFACT_CHECK_SCRIPT,
+                        "timeout": "5m",
+                    },
+                )
+                self.assertEqual(step["metadata"]["gc.build.artifact_schema"], schema)
+                self.assertEqual(step["metadata"]["gc.build.artifact_path_keys"], path_keys)
+
+    def _run_build_artifact_check(
+        self,
+        beads_by_id: dict[str, str],
+        bead_id: str,
+        extra_env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        script = root / "assets" / "scripts" / "checks" / "build-artifact-valid.sh"
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            bin_dir = tmp / "bin"
+            bin_dir.mkdir()
+            show_dir = tmp / "show"
+            show_dir.mkdir()
+            for bead, payload in beads_by_id.items():
+                (show_dir / f"{bead}.json").write_text(payload, encoding="utf-8")
+            fake_bd = bin_dir / "bd"
+            fake_bd.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "case \"$1\" in\n"
+                "  show) cat \"$BD_SHOW_DIR/$2.json\" ;;\n"
+                "  *) exit 2 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            fake_bd.chmod(0o755)
+
+            env = {
+                **os.environ,
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                "BD_SHOW_DIR": str(show_dir),
+                "GC_BEAD_ID": bead_id,
+                **(extra_env or {}),
+            }
+            return subprocess.run(
+                [str(script)],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+    @staticmethod
+    def _valid_requirements_artifact() -> str:
+        sections = []
+        for section in (
+            "Problem Statement",
+            "W6H",
+            "User Stories",
+            "Technical Stories",
+            "Behavior Requirements",
+            "Example Mapping",
+            "Acceptance Criteria",
+            "Out Of Scope",
+            "Open Questions",
+        ):
+            content = f"{section} content."
+            if section == "Example Mapping":
+                content += (
+                    "\n\n| ID | Status |\n"
+                    "| --- | --- |\n"
+                    "| GC-METH-001 | covered |"
+                )
+            sections.append(f"## {section}\n\n{content}")
+        body = "\n\n".join(sections)
+        return (
+            "---\n"
+            "schema: gc.build.requirements.v1\n"
+            "workflow:\n"
+            "  id: build-20260610-001\n"
+            "  formula: build-basic\n"
+            "methodology:\n"
+            "  pack: gascity\n"
+            "  name: build-basic\n"
+            "producer:\n"
+            "  formula: planning-base\n"
+            "  stage: requirements\n"
+            "  attempt: 1\n"
+            "status: approved\n"
+            "trace:\n"
+            "  upstream:\n"
+            "    - path: request.md\n"
+            "      hash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+            "  coverage:\n"
+            "    - id: GC-METH-001\n"
+            "      status: covered\n"
+            "---\n"
+            "\n"
+            f"{body}\n"
+        )
+
+    def test_build_artifact_check_passes_valid_recorded_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            artifact = pathlib.Path(artifact_dir) / "requirements.md"
+            artifact.write_text(self._valid_requirements_artifact(), encoding="utf-8")
+
+            control = (
+                '[{"id": "loop", "metadata": {'
+                '"gc.root_bead_id": "root", '
+                '"gc.build.artifact_schema": "gc.build.requirements.v1", '
+                '"gc.build.artifact_path_keys": "gc.build.requirements_path,gc.var.requirements_path"}}]'
+            )
+            root_bead = (
+                '[{"id": "root", "metadata": {'
+                f'"gc.build.requirements_path": "{artifact}"'
+                "}}]"
+            )
+            result = self._run_build_artifact_check(
+                {"loop": control, "root": root_bead}, "loop"
+            )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("build artifact valid", result.stdout)
+
+    def test_build_artifact_check_blocks_invalid_artifact_with_repair_context(self) -> None:
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            artifact = pathlib.Path(artifact_dir) / "requirements.md"
+            artifact.write_text(
+                self._valid_requirements_artifact().replace("status: approved", "status: bogus"),
+                encoding="utf-8",
+            )
+
+            control = (
+                '[{"id": "loop", "metadata": {'
+                '"gc.root_bead_id": "root", '
+                '"gc.build.artifact_schema": "gc.build.requirements.v1", '
+                '"gc.build.artifact_path_keys": "gc.build.requirements_path,gc.var.requirements_path"}}]'
+            )
+            root_bead = (
+                '[{"id": "root", "metadata": {'
+                f'"gc.build.requirements_path": "{artifact}"'
+                "}}]"
+            )
+            result = self._run_build_artifact_check(
+                {"loop": control, "root": root_bead}, "loop"
+            )
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("failed validation", result.stderr)
+        self.assertIn("error:", result.stderr)
+        self.assertIn("status", result.stderr)
+
+    def test_build_artifact_check_fails_when_no_artifact_path_recorded(self) -> None:
+        control = (
+            '[{"id": "loop", "metadata": {'
+            '"gc.root_bead_id": "root", '
+            '"gc.build.artifact_schema": "gc.build.requirements.v1", '
+            '"gc.build.artifact_path_keys": "gc.build.requirements_path,gc.var.requirements_path"}}]'
+        )
+        root_bead = '[{"id": "root", "metadata": {}}]'
+        result = self._run_build_artifact_check({"loop": control, "root": root_bead}, "loop")
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("no artifact path recorded", result.stderr)
+        self.assertIn("gc.build.requirements_path,gc.var.requirements_path", result.stderr)
 
     def test_bmad_story_development_emits_base_check_verdict(self) -> None:
         gascity_root = pathlib.Path(__file__).resolve().parents[1]

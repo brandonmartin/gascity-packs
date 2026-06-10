@@ -1,21 +1,16 @@
 description = """
-Report-only implementation review over a diff, branch, or artifact set.
+Virtual code-review methodology contract.
 
-Launch inputs:
-- context_path: {{context_path}} (empty means no extra context bundle)
-- subject_path: {{subject_path}}
-- report_path: {{report_path}}
+This methodology contract writes a report-only review over a supplied subject.
+Concrete methodology packs override it with native review fanout, synthesis, or
+scoring while entrypoint adapters keep GitHub/comment lifecycle ownership.
 """
-formula = "review"
+formula = "code-review-base"
 version = 1
 contract = "graph.v2"
-extends = ["code-review-base"]
 target_required = false
+internal = true
 mode = "report"
-
-[catalog]
-name = "review"
-description = "Write an implementation review report for a diff, branch, or artifact set."
 
 [vars]
 [vars.context_path]
@@ -34,14 +29,14 @@ required = true
 id = "validate-context"
 title = "Validate report context"
 metadata = { "gc.run_target" = "gc.run-operator" }
-description_file = "../assets/workflows/review/validate-context.md"
+description_file = "../assets/workflows/code-review-base/validate-context.md"
 
 [[steps]]
 id = "write-report"
 title = "Write review report"
 needs = ["validate-context"]
 metadata = { "gc.run_target" = "gc.implementation-reviewer", "gc.build.artifact_schema" = "gc.build.review.v1", "gc.build.artifact_path_keys" = "gc.build.review_report_path,gc.var.report_path" }
-description_file = "../assets/workflows/review/write-report.md"
+description_file = "../assets/workflows/code-review-base/write-report.md"
 
 [steps.check]
 max_attempts = 3
