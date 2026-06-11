@@ -1641,5 +1641,51 @@ class PublishImportedIdentityTests(unittest.TestCase):
 
 
 
+class RenderAdminHomeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        self._old_environ = os.environ.copy()
+        os.environ["GC_CITY_ROOT"] = self.tempdir.name
+
+    def tearDown(self) -> None:
+        os.environ.clear()
+        os.environ.update(self._old_environ)
+
+    def test_register_form_offers_organization_target(self) -> None:
+        snapshot = {
+            "config": {"app": {}},
+            "admin_url": "https://admin.example",
+            "webhook_url": "https://hook.example",
+            "recent_requests": [],
+            "recent_address_results": [],
+        }
+        with mock.patch.object(service.common, "build_status_snapshot", return_value=snapshot), mock.patch.object(
+            service.common, "build_manifest", return_value={"name": "demo"}
+        ):
+            page = service.render_admin_home()
+
+        self.assertIn('action="https://github.com/settings/apps/new"', page)
+        self.assertIn('id="org-name"', page)
+        self.assertIn('"https://github.com/organizations/" + encodeURIComponent(org) + "/settings/apps/new"', page)
+
+    def test_manifest_failure_renders_warning_not_form(self) -> None:
+        snapshot = {
+            "config": {"app": {}},
+            "admin_url": "",
+            "webhook_url": "",
+            "recent_requests": [],
+            "recent_address_results": [],
+        }
+        with mock.patch.object(service.common, "build_status_snapshot", return_value=snapshot), mock.patch.object(
+            service.common, "build_manifest", side_effect=ValueError("published admin and webhook URLs are required")
+        ):
+            page = service.render_admin_home()
+
+        self.assertNotIn('id="org-name"', page)
+        self.assertIn("published admin and webhook URLs are required", page)
+
+
+
 if __name__ == "__main__":
     unittest.main()
