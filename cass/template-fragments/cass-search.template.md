@@ -7,11 +7,16 @@ subsystem, check past agent sessions before starting from scratch.
 Use non-interactive `cass` commands only:
 
 ```bash
-cass health --json || cass index --full
+cass health --json || cass diag --json
 cass sessions --current --json
 cass sessions --workspace "$(pwd)" --json --limit 5
 cass search "<query>" --json --limit 5 --fields minimal
 ```
+
+Do not run `cass index`, `cass index --full`, or `cass doctor --fix` from an
+agent session unless the human explicitly asks you to repair the shared CASS
+store. Failed health means search may be unavailable; it is not permission to
+start a rebuild.
 
 If a hit looks relevant, inspect it with:
 
