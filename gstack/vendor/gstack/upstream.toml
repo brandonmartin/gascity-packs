@@ -1,4 +1,5 @@
 [upstream]
+name = "gstack"
 source = "https://github.com/garrytan/gstack"
 commit = "1626d4857bfe30da2690dd6a3217961934aa3192"
 license = "MIT"
