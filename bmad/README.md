@@ -1,46 +1,104 @@
 # BMAD Pack
 
-This pack implements the Gas City `build-base` workflow contract with vendored
-[BMAD Method](https://github.com/bmad-code-org/BMAD-METHOD) skills.
+[BMAD Method](https://github.com/bmad-code-org/BMAD-METHOD) is a document-first
+delivery process: write a PRD, design the architecture, decompose it into
+epics and stories, gate on implementation readiness, implement story by story,
+then run adversarial code review. This pack vendors the BMAD Method skills and
+runs that process as a durable Gas City build factory: every stage is a bead in
+a graph that Gas City can retry, observe, and resume, and the result is a
+reviewed implementation in your repository with a full artifact trail.
 
-## What It Provides
+## When to choose bmad
 
-- Formula: `bmad-build`
-- Methodology formulas: `bmad-planning`, `bmad-decomposition`,
-  `bmad-implementation`, `bmad-review`, and `bmad-fix-loop`
-- Expansion formulas: `bmad-code-review-flow`
-- Implementation item formulas: `bmad-story-development`,
-  `bmad-story-development-item`
-- Vendored skills: `bmad-prd`, `bmad-create-architecture`,
-  `bmad-check-implementation-readiness`, `bmad-create-epics-and-stories`,
-  `bmad-quick-dev`, `bmad-dev-story`, `bmad-code-review`,
-  `bmad-brainstorming`, and `bmad-spec`
-- Provenance: `vendor/bmad-method/upstream.toml`
+- You want disciplined, document-first delivery: an explicit PRD and
+  architecture document exist before any code, and an implementation-readiness
+  gate blocks coding until the stories are actually ready.
+- You want per-story rigor: each story gets its own implement, self-check,
+  acceptance-audit, and fix loop, followed by a four-lane adversarial code
+  review (blind-hunter, edge-case, acceptance-audit, gap-analysis).
+- Prefer `build-basic` (in the `gascity` pack) when you want the default
+  starter factory with fewer stages and a single-lane review.
+- Prefer `compound-engineering` when review breadth matters most (20+
+  specialist reviewer lanes), or `superpowers` when you want hard spec-approval
+  gates and strict per-task TDD.
 
-BMAD maps naturally onto the full lifecycle base: PRD, architecture,
-epics/stories, implementation readiness, implementation, review, finalize, and
-publish.
+## Quick start
 
-The pack-local compatibility ledger lives at
-[`bmad/REQUIREMENTS.md`](./REQUIREMENTS.md) and records the build-base
-contract proofs, including the inherited `gc` import and preserved anchor
-order.
+Prerequisites: Gas City installed and a city running, plus a git repository
+registered as a rig. If you have not done that yet:
 
-BMAD quick-dev and code-review describe sub-agent/task handoffs and parallel
-review layers. This pack converts those shapes into Gas City item formulas and
-expansion formulas with explicit implementation, self-check, acceptance-audit,
-adversarial review, synthesis, and fix lanes. The vendored skill files are
-source material only; the workflow must not invoke provider-native subagents,
-slash commands, task tools, or the upstream plugin runtime.
+```sh
+brew install gastownhall/gascity/gascity
+gc init ~/my-city
+cd ~/my-city
+gc start
+```
 
-BMAD structured steps are preserved as graph structure wherever possible. The
-pack keeps BMAD's step-file discipline as prompt guidance, but turns repeated
-implementation and review handoffs into formulas, check loops, and fanout lanes
-so the work is durable, resumable, and visible in Gas City. When BMAD text says
-to launch a task or review subagent, read that as a request for a Gas City lane
-or expansion child.
+```sh
+mkdir proj && cd proj && git init
+gc rig add .
+```
 
-## Build-Base Mapping
+1. **Get the packs.** Clone this repository next to your city:
+
+   ```sh
+   git clone https://github.com/gastownhall/gascity-packs ~/gascity-packs
+   ```
+
+2. **Import the pack in `city.toml`.** Import bmad at city scope. The pack
+   imports the Gas City base pack internally as `gc`, so `build-base` and the
+   `gc.*` formula surface are available transitively. The rig additionally
+   needs the `gascity/roles` import so the `gc.*` role agents (operator,
+   publisher, and friends) can run work inside the target repository:
+
+   ```toml
+   [imports.bmad]
+   source = "../gascity-packs/bmad"
+
+   [[rigs]]
+   name = "proj"
+
+   [rigs.imports.gc]
+   source = "../gascity-packs/gascity/roles"
+   ```
+
+   Imports also accept git sources, fetched and pinned by `gc import install`:
+
+   ```toml
+   [imports.bmad]
+   source = "https://github.com/gastownhall/gascity-packs.git//bmad"
+   ```
+
+3. **Launch your first build.** `bmad-build` is targeted
+   (`target_required = true`), so create a bead describing the goal first,
+   then sling the formula at it from the target rig context:
+
+   ```sh
+   gc bd create "Add a --json flag to the export command"
+   gc sling gc.run-operator <bead-id> --on bmad-build \
+     --var artifact_root=plans/json-flag/build \
+     --var drain_policy=separate
+   ```
+
+   `artifact_root` is the only required variable; everything else has a
+   default (see Customization below).
+
+4. **What happens next.** The workflow walks these stages in order: prepare,
+   PRD requirements, architecture plan, architecture handoff review,
+   epics/stories decomposition, implementation readiness, the story
+   implementation drain, adversarial code review, finalize, publish. Stage
+   artifacts (PRD, architecture document, decomposition, readiness report,
+   review reports, final summary) land under `artifact_root` in your rig.
+
+5. **Watch progress.** The workflow root bead carries the run state and the
+   `gc.build.*` handoff metadata; list beads with `gc bd --rig <rig>` and
+   convoys with `gc convoy --rig <rig>`. The default `interaction_mode` is
+   `interactive`, so the run halts for your input at BMAD checkpoints — each
+   halt records a resume note, and `gc session attach <session>` drops you
+   into the waiting session. Pass `--var interaction_mode=autonomous` if you
+   would rather it run unattended.
+
+## Stage map
 
 `bmad-build` extends `build-base` and keeps the inherited anchor order
 `prepare -> requirements -> plan -> plan-review -> decompose ->
@@ -68,20 +126,11 @@ defaulting to `bmad.story-implementer`.
 Supported modes and drain policies, as declared in
 `[metadata.gc.methodology]`:
 
-- `interaction_modes`: `interactive`, `autonomous`, `headless` (inherited
-  `interaction_mode` var, default `interactive`)
-- `review_modes`: `report`, `agent`, `interactive` (inherited `review_mode`
-  var, default `agent`)
-- `implementation_strategy`: `drain` with `allowed_drain_policies` of
-  `separate` (drains `bmad-story-development` with exclusive member access)
-  and `same-session` (drains `bmad-story-development-item` in one shared
-  single-lane session with `on_item_failure = "skip_remaining"`)
-
-## End-to-End Flow
-
-The BMAD pack keeps BMAD's PRD, architecture, epics/stories, readiness,
-quick-dev, and adversarial review shape, but maps native handoffs onto Gas City
-beads, drains, and graph loops.
+| Axis | Values | Default | Meaning |
+| ---- | ------ | ------- | ------- |
+| `interaction_mode` | `interactive`, `autonomous`, `headless` | `interactive` | BMAD's menu/checkpoint axis: interactive runs preserve halts and user choices; headless automation expects all required inputs up front. |
+| `review_mode` | `report`, `agent`, `interactive` | `agent` | `report` synthesizes findings without applying fixes; `agent` and `interactive` feed the fix loop until the approval check passes. |
+| `drain_policy` | `separate`, `same-session` | `separate` | `separate` drains `bmad-story-development` item formulas in parallel worktrees with exclusive member access; `same-session` drains `bmad-story-development-item` in one shared single-lane session with `on_item_failure = "skip_remaining"`. |
 
 ```mermaid
 flowchart TD
@@ -162,26 +211,114 @@ The story-development item formula loops per implementation bead until the
 story self-check and acceptance audit are clean. After the convoy drains, the
 BMAD code-review loop fans out adversarial review lanes, synthesizes findings,
 applies required fixes, and repeats until the implementation-review check
-passes.
+passes. Those reviewer lanes are real sibling beads — the fan-in barrier in
+the diagram documents the synthesizer's `needs` list, not a serial execution
+step between reviewers.
 
-Those post-implementation reviewer lanes are real sibling beads. The fan-in
-barrier in the diagram is documentation for the synthesizer's `needs` list, not
-a serial execution step between reviewers.
+## Customization
 
-For mode vocabulary, `interaction_mode` is the BMAD menu/checkpoint axis:
-interactive runs preserve halts and user choices, while headless automation
-expects all required inputs up front. `review_mode` describes whether BMAD
-review only reports findings or feeds a fix loop.
+Launch variables you are most likely to set (all passed as `--var k=v`):
 
-## Import It
+| Variable | Default | What it changes |
+| -------- | ------- | --------------- |
+| `artifact_root` | required | Directory in the rig where all stage artifacts are written. |
+| `interaction_mode` | `interactive` | Human participation: `interactive` preserves BMAD halts and menus, `autonomous` makes reasonable decisions while recording evidence, `headless` is for automation with no blocking prompts. |
+| `review_mode` | `agent` | Review authority: `report` writes findings only; `agent`/`interactive` apply fixes through the fix loop until approval. |
+| `drain_policy` | `separate` | `separate` runs stories in parallel worktrees; `same-session` runs them sequentially in one shared session. |
+| `implementation_target` | `bmad.story-implementer` | Role agent that implements stories and applies review fixes. |
+| `push` | `false` | Set `true` to allow the final publish stage to push after all checks pass. |
+| `open_pr` | `false` | Set `true` to allow the final publish stage to open a PR after all checks pass. |
+| `max_iterations` | `10` | Maximum implementation/review fix attempts before the loop gives up. |
+| `planning_formula`, `decomposition_formula`, `implementation_formula`, `implementation_item_formula`, `code_review_formula`, `review_fix_formula` | `bmad-planning`, `bmad-decomposition`, `bmad-implementation`, `bmad-story-development-item`, `bmad-review`, `bmad-fix-loop` | Selector surface: swap any stage methodology for another formula that satisfies the matching base contract. |
 
-Import this pack at city scope. It imports the Gas City pack internally as
-`gc`, so `build-base` is available transitively:
+To change what a stage tells its agent without touching the graph, shadow the
+stage prompt asset: put a Markdown file at the same relative path in a
+higher-priority city or local pack layer. For example, to replace the PRD
+stage prompt, create `assets/workflows/bmad-build/requirements.md` in your
+city assets — Gas City resolves `description_file` assets through the normal
+import/layer search path, so your file replaces this pack's prompt text. Every
+stage body under `bmad/assets/workflows/` can be shadowed the same way. For
+advanced step overrides (replacing a step with another formula, expansion, or
+fanout), see "Stable Workflow Override Interface" in the
+[gascity pack README](../gascity/README.md).
 
-```toml
-[imports.bmad]
-source = "../gascity-packs/bmad"
+## Examples
+
+Interactive first feature build — the default posture. Halts at BMAD
+checkpoints for your decisions, runs stories in parallel worktrees, and stops
+before any push or PR:
+
+```sh
+gc bd create "Add a --json flag to the export command"
+gc sling gc.run-operator <bead-id> --on bmad-build \
+  --var artifact_root=plans/json-flag/build \
+  --var drain_policy=separate
 ```
 
-Then launch `bmad-build` from the target rig context. Rig role agents still use
-the Gas City `gc.*` override surface.
+Autonomous run that ships — no blocking prompts, review findings fixed by the
+agent loop, and publish allowed to push the branch and open a PR once every
+check passes:
+
+```sh
+gc bd create "Migrate the config loader from JSON to TOML"
+gc sling gc.run-operator <bead-id> --on bmad-build \
+  --var artifact_root=plans/toml-config/build \
+  --var interaction_mode=autonomous \
+  --var review_mode=agent \
+  --var push=true \
+  --var open_pr=true
+```
+
+Same-session drain for a small task — all stories run sequentially in one
+shared worker session and worktree instead of fanning out, which suits small
+changes where parallel worktrees are overhead:
+
+```sh
+gc bd create "Fix off-by-one in pagination cursor"
+gc sling gc.run-operator <bead-id> --on bmad-build \
+  --var artifact_root=plans/pagination-fix/build \
+  --var interaction_mode=autonomous \
+  --var drain_policy=same-session
+```
+
+## What's vendored
+
+- Formula: `bmad-build`
+- Methodology formulas: `bmad-planning`, `bmad-decomposition`,
+  `bmad-implementation`, `bmad-review`, and `bmad-fix-loop`
+- Expansion formulas: `bmad-code-review-flow`
+- Implementation item formulas: `bmad-story-development`,
+  `bmad-story-development-item`
+- Pack agents: `bmad.prd-writer`, `bmad.architect`,
+  `bmad.epic-story-decomposer`, `bmad.readiness-reviewer`,
+  `bmad.story-implementer`, `bmad.story-self-checker`,
+  `bmad.acceptance-auditor`, `bmad.blind-hunter-reviewer`,
+  `bmad.edge-case-reviewer`, and `bmad.bmad-review-synthesizer`
+- Vendored skills: `bmad-prd`, `bmad-create-architecture`,
+  `bmad-check-implementation-readiness`, `bmad-create-epics-and-stories`,
+  `bmad-quick-dev`, `bmad-dev-story`, `bmad-code-review`,
+  `bmad-brainstorming`, and `bmad-spec`
+- Provenance: `vendor/bmad-method/upstream.toml` records the upstream
+  repository, pinned commit, MIT license, and vendored paths
+
+BMAD quick-dev and code-review describe sub-agent/task handoffs and parallel
+review layers. This pack converts those shapes into Gas City item formulas and
+expansion formulas with explicit implementation, self-check, acceptance-audit,
+adversarial review, synthesis, and fix lanes. The vendored skill files are
+source material only; the workflow must not invoke provider-native subagents,
+slash commands, task tools, or the upstream plugin runtime.
+
+BMAD structured steps are preserved as graph structure wherever possible. The
+pack keeps BMAD's step-file discipline as prompt guidance, but turns repeated
+implementation and review handoffs into formulas, check loops, and fanout lanes
+so the work is durable, resumable, and visible in Gas City. When BMAD text says
+to launch a task or review subagent, read that as a request for a Gas City lane
+or expansion child.
+
+## Compatibility ledger
+
+The pack-local compatibility ledger lives at
+[`bmad/REQUIREMENTS.md`](./REQUIREMENTS.md) and records the build-base
+contract proofs — the inherited `gc` import, preserved anchor order, mode and
+drain declarations, selector defaults, and the evidence commands that
+reproduce each claim.

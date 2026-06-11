@@ -2,8 +2,6 @@
 
 A collection of opt-in [Gas City](https://github.com/gastownhall/gascity) packs.
 
-## What's a pack?
-
 Gas City is an orchestration-builder SDK for multi-agent coding workflows. A
 *pack* is a unit of workspace configuration: agents, commands, services,
 formulas, skills, hooks, template fragments, or any combination. Packs compose
@@ -13,24 +11,112 @@ this repo without forking.
 For the full model (cities, rigs, formulas, beads, runtime providers) see the
 [Gas City README](https://github.com/gastownhall/gascity).
 
+## Start here: first build in about ten minutes
+
+If you just installed Gas City and want a working multi-agent build factory,
+this is the shortest path. Each step is copy-pasteable; swap names to taste.
+
+1. **Install Gas City and start a city** (skip steps you have already done):
+
+   ```sh
+   brew install gastownhall/gascity/gascity
+   gc init ~/my-city
+   cd ~/my-city
+   gc start
+   ```
+
+2. **Add the repository you want agents to work on as a rig:**
+
+   ```sh
+   git clone https://github.com/you/your-project
+   cd your-project
+   gc rig add .
+   ```
+
+3. **Get the packs.** Clone this repo next to your city, or import straight
+   from git:
+
+   ```sh
+   git clone https://github.com/gastownhall/gascity-packs ~/gascity-packs
+   ```
+
+4. **Import the base pack and rig roles** in your city's `city.toml`:
+
+   ```toml
+   [imports.gc]
+   source = "/home/you/gascity-packs/gascity"
+
+   [[rigs]]
+   name = "your-project"
+
+   [rigs.imports.gc]
+   source = "/home/you/gascity-packs/gascity/roles"
+   ```
+
+   The city-level import provides the workflow formulas and the `gc.mayor`
+   coordinator skill; the rig-level `roles` import provides the worker agents
+   (`gc.implementation-worker`, `gc.requirements-planner`, and friends) that
+   the formulas route work to.
+
+5. **Run your first build.** Create a bead describing the goal, then launch
+   the starter factory against it:
+
+   ```sh
+   gc bd create "Add a --json flag to the export command"
+   gc sling gc.run-operator <bead-id> --on build-basic \
+     --var artifact_root=plans/json-flag/build
+   ```
+
+   `build-basic` walks requirements → plan → plan review → decomposition →
+   parallel implementation → a three-lane review fanout → finalize. Artifacts
+   (requirements, plan, review reports, and a `factory-run.md` summary) land
+   under `artifact_root` in your rig.
+
+6. **Pick a methodology when you want more opinion.** The four methodology
+   packs below replace `build-basic`'s stages with vendored, battle-tested
+   processes while keeping the same launch shape — import one at city scope
+   and sling its build formula instead (for example `--on bmad-build`). Each
+   pack's README has its own quick start.
+
+## Which build pack should I use?
+
+| Pack | Process it runs | Reach for it when |
+| ---- | --------------- | ----------------- |
+| [gascity](./gascity) (`build-basic`) | Requirements → plan → review → decompose → implement → three-lane review | You want the default starter factory with the fewest moving parts. |
+| [bmad](./bmad) (`bmad-build`) | PRD → architecture → epics/stories → readiness gate → story-by-story implementation with self-check and acceptance audit → adversarial review | You want disciplined document-first delivery with explicit story decomposition and readiness checks. |
+| [compound-engineering](./compound-engineering) (`compound-build`) | Brainstorm/plan → plan review → implement → the widest reviewer-persona fanout → resolution | Review depth matters most: correctness, security, performance, migrations, and API contracts each get their own reviewer lane. |
+| [superpowers](./superpowers) (`superpowers-build`) | Brainstorm → written spec approval → per-task test-driven development → spec-compliance then code-quality review | You want hard approval gates before code and strict TDD per task. |
+| [gstack](./gstack) (`gstack-build`) | Office-hours intake → multi-perspective plan review → build → staff review → QA → security → release readiness | You want founder/PM-flavored gates and explicit QA + release-readiness stages before shipping. |
+
+All five expose the same launch variables (`interaction_mode`, `review_mode`,
+`drain_policy`, `push`, `open_pr`, …), so switching methodology is a one-word
+change to the formula name.
+
 ## Using a pack
 
 Packs live next to the consuming workspace. A typical layout:
 
 ```text
 your-city/
-  pack.toml
-packs/
-  pr-review/          # pack from this repo
-  discord/
+  city.toml
+gascity-packs/
+  gascity/
+  bmad/
   ...
 ```
 
-Inside your workspace `pack.toml`:
+Inside `city.toml` (or any pack's `pack.toml`):
 
 ```toml
-[imports.pr-review]
-source = "../packs/pr-review"
+[imports.bmad]
+source = "../gascity-packs/bmad"
+```
+
+Imports also accept git sources, fetched and pinned by `gc import install`:
+
+```toml
+[imports.bmad]
+source = "https://github.com/gastownhall/gascity-packs.git//bmad"
 ```
 
 Each pack documents its own prerequisites, import snippet, and usage.
@@ -65,8 +151,9 @@ Use two mode concepts when comparing methodology packs:
 - `review_mode` describes whether review is report-only, machine handoff, or
   an interactive top-level review that may apply safe fixes.
 
-- [gascity](./gascity) provides the `build-base` workflow contract and the
-  default `build-basic` implementation.
+- [gascity](./gascity) provides the `build-base` workflow contract, the
+  default `build-basic` implementation, and the `build-from-*` continuation
+  entrypoints for resuming a build from existing artifacts.
 - [compound-engineering](./compound-engineering) imports `gascity` as `gc`
   and implements `build-base` with vendored Compound Engineering skills,
   agent personas, and Gas City-native review/finalization expansions.

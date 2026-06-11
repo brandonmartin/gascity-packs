@@ -1,44 +1,112 @@
-# GC Mayor Workflow Pack
+# Gas City Build Pack (`gc`)
 
-This pack provides a convoy-first planning and implementation workflow for Gas
-City work:
+This is the base pack for running full software-delivery workflows in Gas
+City: gather requirements, write and review a plan, decompose into tasks,
+implement in parallel agent sessions, review the result, and optionally
+publish. It ships three things:
 
-- `gc.mayor` is the user-facing coordinator skill. It gathers requirements,
-  writes implementation plans, creates approved beads/convoys, and discovers
-  runnable workflow formulas.
-- Formula workflows opt into discovery with `[catalog]` metadata. The mayor
-  discovers them with `gc formula catalog --json`, inspects them with
-  `gc formula show <name> --json`, and launches them with `gc sling`.
-- Cataloged formulas cover implementation, build loops, targetless reports, and
-  GitHub adapter workflows. Helper/base formulas remain out of the catalog.
+- **Workflow formulas** — `build-basic` (the starter factory), the
+  `build-from-*` continuation entrypoints, direct `implement`, and GitHub
+  adapter workflows (issue triage, issue fix, PR review).
+- **The `gc.mayor` coordinator skill** — a user-facing planner that gathers
+  requirements, writes plans, creates approved beads/convoys, and launches
+  the right formula for you.
+- **The `build-base` contract** — the virtual stage sequence that the
+  methodology packs in this repository (bmad, compound-engineering,
+  superpowers, gstack) extend and override.
 
-Import it with the `gc` binding:
+## Quick Start: your first build
 
-```toml
-[imports.gc]
-source = "../gascity-packs/gascity"
-```
+Prerequisites: Gas City installed and a city running (`gc init`, `gc start`),
+and your project added as a rig (`gc rig add .` inside the repo). See the
+[repository README](../README.md) for the from-scratch path.
 
-Run the mayor skill to plan and coordinate work:
+1. Import the pack twice in `city.toml` — once at city scope for formulas and
+   the mayor skill, once per rig for the worker role agents:
+
+   ```toml
+   [imports.gc]
+   source = "../gascity-packs/gascity"
+
+   [[rigs]]
+   name = "your-project"
+
+   [rigs.imports.gc]
+   source = "../gascity-packs/gascity/roles"
+   ```
+
+2. Create a bead describing what you want built, and sling the starter
+   factory at it:
+
+   ```sh
+   gc bd create "Add a --json flag to the export command"
+   gc sling gc.run-operator <bead-id> --on build-basic \
+     --var artifact_root=plans/json-flag/build
+   ```
+
+3. Watch it run. The workflow walks requirements → plan → plan review →
+   decompose → parallel implementation → a three-lane starter review
+   (acceptance, test evidence, simplicity) → finalize. Attach to any agent
+   session with `gc session attach <name>`, or inspect the workflow root
+   bead as stages record their artifacts.
+
+4. Read the results under `artifact_root` in your rig: `requirements.md`,
+   the implementation plan, review reports, and `factory-run.md` — a short
+   summary of what ran, what was proven, and the suggested next action.
+
+Prefer a guided experience? Run the coordinator skill instead and let it do
+the planning and launching:
 
 ```text
 Use skill gc.mayor
 ```
 
-Discover formula workflows from the active rig/city context:
+## Choosing an entrypoint
+
+| You have | Launch | Notes |
+| -------- | ------ | ----- |
+| Just an idea | `build-basic` (targeted at a bead) | Full lifecycle from requirements onward. |
+| Approved requirements | `build-from-plan` | Produces plan + plan review, then continues. |
+| Approved requirements, plan, and plan review | `build-from-decompose` | Starts at decomposition. |
+| An implementation convoy | `build-from-convoy` | Drains the convoy, then reviews. |
+| Implementation evidence | `build-from-review` | Review, repair/restart handoff, finalize, publish. |
+| An approved convoy, no build wrapper wanted | `implement` | Direct drain without the review/publish suffix. |
+| A GitHub issue or PR URL | `github-issue-triage`, `github-issue-fix`, `github-pr-review` | Targetless adapters; see GitHub Adapter Workflows below. |
+
+Discover everything that is launchable from the active rig/city context:
 
 ```sh
 gc formula catalog --json
 gc formula show implement --json
 ```
 
-Then launch implementation against an approved implementation convoy:
+Launch implementation directly against an approved implementation convoy:
 
 ```sh
 gc sling gc.run-operator <convoy-id> --on implement \
   --var context_path=<optional-context-yaml> \
   --var drain_policy=separate
 ```
+
+## Launch variables that matter
+
+Every build entrypoint accepts the same knobs. Set them with `--var k=v` at
+launch or pin them in a rig's `formula_vars`:
+
+| Variable | Default | What it changes |
+| -------- | ------- | --------------- |
+| `artifact_root` | (required) | Directory under the rig where all build artifacts land. |
+| `interaction_mode` | `interactive` | `interactive` keeps blocking questions and approval menus; `autonomous` decides and records evidence; `headless` never prompts. |
+| `review_mode` | `agent` | `report` is read-only findings; `agent` is a structured fix handoff; `interactive` may apply safe fixes directly. |
+| `drain_policy` | `separate` | `separate` runs implementation beads in parallel worker sessions; `same-session` runs them serially in one shared session. |
+| `implementation_target` | `gc.implementation-worker` | The rig role that implements each work item. |
+| `push` / `open_pr` | `false` | Allow the publish stage to push and open a PR after all checks pass. |
+| `max_iterations` | `10` | Bound on implementation/review fix attempts. |
+
+When variables are not enough, every stage prompt can be replaced by dropping
+a Markdown file at the same relative path in a higher-priority layer, and
+every documented step can be swapped for your own expansion — see "Stable
+Workflow Override Interface" below for the recipe and per-stage examples.
 
 If part of the factory already ran, launch the targetless continuation
 entrypoint that matches the artifacts you already have:
@@ -52,12 +120,10 @@ gc sling gc.run-operator build-from-decompose --formula \
   --var drain_policy=separate
 ```
 
-Use `build-from-plan` when requirements already exist, `build-from-decompose`
-when approved requirements/plan/plan-review already exist, `build-from-convoy`
-when an implementation convoy already exists, and `build-from-review` when
-implementation evidence already exists. Use `implement` when you want the
-lower-level direct implementation-convoy launcher without the build review and
-publish suffix.
+Each continuation validates the artifacts you hand it before doing any work,
+records the entrypoint it started from, and refuses to finalize as a pass when
+review or repair is still blocked — see "Choosing an entrypoint" above for
+which one matches the artifacts you have.
 
 Every formula in this pack uses `contract = "graph.v2"`. Targeted formulas take
 the core-injected reserved convoy target; they do not declare `issue`,
