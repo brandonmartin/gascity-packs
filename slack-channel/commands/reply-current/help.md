@@ -15,6 +15,7 @@ Usage:
   gc slack-channel reply-current [--session <id>]
                                  (--body <text> | --body-file <path>)
                                  [--thread-current | --reply-to <ts>]
+                                 [--idempotency-key <key>]
 
 Flags:
   --session         Override the session id (default: $GC_SESSION_ID).
@@ -23,6 +24,11 @@ Flags:
   --thread-current  Thread under the latest inbound message. Mutually
                     exclusive with --reply-to.
   --reply-to        Slack message ts to thread under.
+  --idempotency-key Caller-supplied key to dedupe retries. When omitted, the
+                    adapter derives a deterministic key from the resolved
+                    session, channel, thread anchor and body, so a retry of
+                    the same reply replays the original receipt instead of
+                    posting a duplicate after a delivered-but-timed-out POST.
 
 Examples:
   gc slack-channel reply-current --body "on it" --thread-current

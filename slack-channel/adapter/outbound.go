@@ -11,23 +11,26 @@ import (
 // --- request bodies (one per outbound verb wrapper) -----------------------
 
 type publishRequest struct {
-	SessionID string `json:"session_id"`
-	Body      string `json:"body"`
-	ReplyTo   string `json:"reply_to,omitempty"`
+	SessionID      string `json:"session_id"`
+	Body           string `json:"body"`
+	ReplyTo        string `json:"reply_to,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 type publishToChannelRequest struct {
-	SessionID string `json:"session_id,omitempty"`
-	ChannelID string `json:"channel_id"`
-	ThreadTS  string `json:"thread_ts,omitempty"`
-	Body      string `json:"body"`
+	SessionID      string `json:"session_id,omitempty"`
+	ChannelID      string `json:"channel_id"`
+	ThreadTS       string `json:"thread_ts,omitempty"`
+	Body           string `json:"body"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 type replyCurrentRequest struct {
-	SessionID     string `json:"session_id"`
-	Body          string `json:"body"`
-	ReplyTo       string `json:"reply_to,omitempty"`
-	ThreadCurrent bool   `json:"thread_current,omitempty"`
+	SessionID      string `json:"session_id"`
+	Body           string `json:"body"`
+	ReplyTo        string `json:"reply_to,omitempty"`
+	ThreadCurrent  bool   `json:"thread_current,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 type reactRequest struct {
@@ -56,7 +59,18 @@ func (s *server) applyIdentity(req *slackPostMessageReq, sessionID string) strin
 
 // post sends a chat.postMessage and writes a uniform receipt. channel and
 // text are required by the caller; identity is applied from sessionID.
-func (s *server) post(w http.ResponseWriter, r *http.Request, sessionID, channel, text, threadTS string) {
+//
+// idempotencyKey makes the post idempotent: if the same key already produced
+// a delivered receipt within the dedup window, the original receipt is
+// replayed without a second Slack POST — the chokepoint that absorbs a retry
+// after a delivered-but-timed-out POST (gpk-bm3f). An empty key disables
+// dedup for the call.
+func (s *server) post(w http.ResponseWriter, r *http.Request, sessionID, channel, text, threadTS, idempotencyKey string) {
+	if cached, ok := s.dedup.Get(idempotencyKey); ok {
+		log.Printf("post: dedup hit idem=%s channel=%s -> returning cached receipt (no re-post)", idempotencyKey, channel)
+		writeJSON(w, http.StatusOK, cached)
+		return
+	}
 	req := slackPostMessageReq{Channel: channel, Text: text, ThreadTS: threadTS}
 	identityApplied := s.applyIdentity(&req, sessionID)
 	resp, err := s.postToSlack(r.Context(), req)
@@ -68,12 +82,11 @@ func (s *server) post(w http.ResponseWriter, r *http.Request, sessionID, channel
 		writeJSONError(w, http.StatusBadGateway, "slack: "+resp.Error)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":               true,
-		"ts":               resp.TS,
-		"channel":          resp.Channel,
-		"identity_applied": identityApplied,
-	})
+	receipt := postReceipt{OK: true, TS: resp.TS, Channel: resp.Channel, IdentityApplied: identityApplied}
+	// Remember delivered receipts so a retry with the same key replays this
+	// receipt instead of re-posting. Put ignores empty keys and failures.
+	s.dedup.Put(idempotencyKey, receipt)
+	writeJSON(w, http.StatusOK, receipt)
 }
 
 // handlePublish posts into the single channel a session is bound to. A
@@ -106,8 +119,8 @@ func (s *server) handlePublish() http.HandlerFunc {
 					req.SessionID, strings.Join(channels, ", ")))
 			return
 		}
-		log.Printf("publish: session=%s channel=%s reply_to=%s", req.SessionID, channels[0], req.ReplyTo)
-		s.post(w, r, req.SessionID, channels[0], req.Body, req.ReplyTo)
+		log.Printf("publish: session=%s channel=%s reply_to=%s idem=%s", req.SessionID, channels[0], req.ReplyTo, req.IdempotencyKey)
+		s.post(w, r, req.SessionID, channels[0], req.Body, req.ReplyTo, req.IdempotencyKey)
 	}
 }
 
@@ -129,8 +142,8 @@ func (s *server) handlePublishToChannel() http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "body is required")
 			return
 		}
-		log.Printf("publish-to-channel: session=%s channel=%s thread_ts=%s", req.SessionID, req.ChannelID, req.ThreadTS)
-		s.post(w, r, req.SessionID, req.ChannelID, req.Body, req.ThreadTS)
+		log.Printf("publish-to-channel: session=%s channel=%s thread_ts=%s idem=%s", req.SessionID, req.ChannelID, req.ThreadTS, req.IdempotencyKey)
+		s.post(w, r, req.SessionID, req.ChannelID, req.Body, req.ThreadTS, req.IdempotencyKey)
 	}
 }
 
@@ -180,8 +193,17 @@ func (s *server) handleReplyCurrent() http.HandlerFunc {
 			channel = channels[0]
 			threadTS = req.ReplyTo // thread_current has no message to thread under here
 		}
-		log.Printf("reply-current: session=%s channel=%s thread_ts=%s", req.SessionID, channel, threadTS)
-		s.post(w, r, req.SessionID, channel, req.Body, threadTS)
+		// Derive a deterministic key when the caller supplied none, so a
+		// retry of the same reply dedupes instead of double-posting after a
+		// delivered-but-timed-out POST (gpk-bm3f). The channel/thread are
+		// resolved above, so the fingerprint is computed here rather than
+		// client-side (unlike slack-full).
+		idempotencyKey := strings.TrimSpace(req.IdempotencyKey)
+		if idempotencyKey == "" {
+			idempotencyKey = deriveReplyIdempotencyKey(req.SessionID, channel, threadTS, req.Body)
+		}
+		log.Printf("reply-current: session=%s channel=%s thread_ts=%s idem=%s", req.SessionID, channel, threadTS, idempotencyKey)
+		s.post(w, r, req.SessionID, channel, req.Body, threadTS, idempotencyKey)
 	}
 }
 

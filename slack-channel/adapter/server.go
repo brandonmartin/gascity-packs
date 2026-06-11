@@ -56,6 +56,8 @@ type server struct {
 
 	httpClient *http.Client
 	now        func() time.Time
+
+	dedup *postDedupCache // idempotent-replay cache for outbound posts (gpk-bm3f)
 }
 
 func newServer(cfg config) (*server, error) {
@@ -67,6 +69,7 @@ func newServer(cfg config) (*server, error) {
 		lastInbound: map[string]inboundRef{},
 		httpClient:  &http.Client{},
 		now:         func() time.Time { return time.Now() },
+		dedup:       newPostDedupCache(postDedupTTL),
 	}
 	if err := s.loadRegistries(); err != nil {
 		return nil, err
