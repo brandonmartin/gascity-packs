@@ -133,7 +133,7 @@ single_lane = true
 [[steps]]
 id = "review"
 title = "Superpowers request code review"
-needs = ["implement", "implement-same-session"]
+needs = ["summarize-implementation"]
 metadata = { "gc.run_target" = "superpowers.code-reviewer", "gc.build.artifact_schema" = "gc.build.review.v1", "gc.build.artifact_path_keys" = "gc.build.review_report_path" }
 expand = "superpowers-code-review"
 expand_vars = { implementation_target = "{{implementation_target}}", artifact_path_keys = "gc.build.review_report_path" }

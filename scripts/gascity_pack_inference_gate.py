@@ -178,6 +178,7 @@ METHODOLOGY_FLOW_CONTRACTS = {
                 "run_target": "superpowers.code-reviewer",
                 "artifact_schema": "gc.build.review.v1",
                 "expand": "superpowers-code-review",
+                "needs": ("summarize-implementation",),
             },
             "finalize": {
                 "run_target": "superpowers.finisher",
@@ -232,6 +233,7 @@ METHODOLOGY_FLOW_CONTRACTS = {
                 "run_target": "compound-engineering.ce-code-review-synthesizer",
                 "artifact_schema": "gc.build.review.v1",
                 "expand": "compound-code-review",
+                "needs": ("summarize-implementation",),
             },
             "finalize": {
                 "run_target": "compound-engineering.ce-compound",
@@ -304,6 +306,7 @@ METHODOLOGY_FLOW_CONTRACTS = {
                 "run_target": "gstack.review-synthesizer",
                 "artifact_schema": "gc.build.review.v1",
                 "expand": "gstack-code-review",
+                "needs": ("summarize-implementation",),
             },
             "qa": {
                 "run_target": "gstack.qa-lead",
@@ -403,6 +406,7 @@ METHODOLOGY_FLOW_CONTRACTS = {
                 "run_target": "bmad.bmad-review-synthesizer",
                 "artifact_schema": "gc.build.review.v1",
                 "expand": "bmad-code-review-flow",
+                "needs": ("summarize-implementation",),
             },
         },
         "expansion_routes": {

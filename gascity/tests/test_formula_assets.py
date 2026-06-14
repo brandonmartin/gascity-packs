@@ -85,6 +85,7 @@ BUILD_BASE_STEPS = [
     "decompose",
     "implement",
     "implement-same-session",
+    "summarize-implementation",
     "review",
     "finalize",
     "publish",
@@ -238,6 +239,10 @@ REVIEW_REPORT_GATE = (
 FIX_LOOP_REVIEW_GATE = ("gc.build.review.v1", "gc.build.review_report_path")
 BUILD_REVIEW_GATE = ("gc.build.review.v1", "gc.build.review_report_path")
 FINAL_REPORT_GATE = ("gc.build.final-report.v1", "gc.build.final_report_path")
+ROOT_IMPLEMENTATION_SUMMARY_GATE = (
+    "gc.build.implementation-summary.v1",
+    "gc.build.implementation_summary_path",
+)
 ITEM_SUMMARY_GATE = (
     "gc.build.implementation-summary.v1",
     "gc.implementation.summary_path,gc.build.implementation_summary_path,gc.var.summary_path",
@@ -253,6 +258,7 @@ BUILD_ARTIFACT_VALIDATION_GATES = {
     ("build-base", "requirements"): REQUIREMENTS_GATE,
     ("build-base", "plan"): PLAN_GATE,
     ("build-base", "decompose"): DECOMPOSITION_GATE,
+    ("build-base", "summarize-implementation"): ROOT_IMPLEMENTATION_SUMMARY_GATE,
     ("build-base", "review"): BUILD_REVIEW_GATE,
     ("build-base", "finalize"): FINAL_REPORT_GATE,
     ("planning-base", "requirements"): REQUIREMENTS_GATE,
@@ -1340,7 +1346,20 @@ class FormulaAssetTests(unittest.TestCase):
                 "implementation_target": "{{implementation_target}}",
             },
         )
+        self.assertEqual(review_step["needs"], ["summarize-implementation"])
         self.assertNotIn("check", review_step)
+
+        summary_step = next(step for step in resolved["steps"] if step["id"] == "summarize-implementation")
+        self.assertEqual(summary_step["metadata"]["gc.run_target"], "gc.run-operator")
+        self.assertEqual(
+            summary_step["metadata"]["gc.build.artifact_schema"],
+            "gc.build.implementation-summary.v1",
+        )
+        self.assertEqual(
+            summary_step["metadata"]["gc.build.artifact_path_keys"],
+            "gc.build.implementation_summary_path",
+        )
+        self.assertEqual(summary_step["needs"], ["implement", "implement-same-session"])
         text = effective_formula_text(root, "build-basic")
         for fragment in (
             "generate-requirements",
@@ -1350,6 +1369,7 @@ class FormulaAssetTests(unittest.TestCase):
             "implementation summary path",
             "guided starter factory",
             "factory-run.md",
+            "summarize-implementation",
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, text)
@@ -1465,6 +1485,7 @@ class FormulaAssetTests(unittest.TestCase):
                     self.assertIn(fragment, text)
 
         finalize_text = (root / "assets/workflows/build-basic/finalize.md").read_text(encoding="utf-8")
+        summary_text = (root / "assets/workflows/build-base/summarize-implementation.md").read_text(encoding="utf-8")
         for fragment in (
             "factory-run.md",
             "methodology",
@@ -1477,11 +1498,23 @@ class FormulaAssetTests(unittest.TestCase):
         ):
             with self.subTest(asset="finalize", fragment=fragment):
                 self.assertIn(fragment, finalize_text)
+        for fragment in (
+            "canonical build implementation summary",
+            "`gc.build.implementation_summary_path`",
+            "`implementation-summary.md`",
+            "`gc.build.implementation-summary.v1`",
+            "accepted requirement IDs",
+            "source anchor ids",
+            "per-item summary paths",
+        ):
+            with self.subTest(asset="summarize-implementation", fragment=fragment):
+                self.assertIn(fragment, summary_text)
 
         for relative_path in (
             "assets/workflows/build-basic/requirements.md",
             "assets/workflows/build-basic/plan.md",
             "assets/workflows/build-basic/decompose.md",
+            "assets/workflows/build-base/summarize-implementation.md",
             "assets/workflows/build-basic/finalize.md",
             "assets/workflows/build-basic-review/{target}.md",
             "assets/workflows/do-work/implement.md",
@@ -1526,6 +1559,7 @@ class FormulaAssetTests(unittest.TestCase):
             "assets/workflows/implementation-base/implement.md",
             "assets/workflows/implementation-item-base/implement-item.md",
             "assets/workflows/implement/summarize.md",
+            "assets/workflows/build-base/summarize-implementation.md",
         ):
             text = (root / relative_path).read_text(encoding="utf-8")
             for fragment in (
@@ -1542,6 +1576,7 @@ class FormulaAssetTests(unittest.TestCase):
             "assets/workflows/build-base/requirements.md": ["gc.build.requirements_path"],
             "assets/workflows/build-base/plan.md": ["gc.build.plan_path"],
             "assets/workflows/build-base/decompose.md": ["gc.build.decomposition_path"],
+            "assets/workflows/build-base/summarize-implementation.md": ["gc.build.implementation_summary_path"],
             "assets/workflows/build-base/review.md": ["gc.build.review_report_path"],
             "assets/workflows/build-base/finalize.md": ["gc.build.final_report_path"],
             "assets/workflows/build-basic/requirements.md": ["gc.build.requirements_path"],
@@ -1643,6 +1678,7 @@ class FormulaAssetTests(unittest.TestCase):
                 )
                 self.assertTrue(step_by_id["implement-same-session"]["drain"]["item"]["single_lane"])
                 review_step = step_by_id["review"]
+                self.assertEqual(review_step["needs"], ["summarize-implementation"])
                 self.assertEqual(review_step["expand"], expected["review_expansion"])
                 expected_review_expand_vars = {
                     "implementation_target": "{{implementation_target}}",
