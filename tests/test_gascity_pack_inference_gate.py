@@ -218,8 +218,8 @@ def test_supported_pack_nightly_workflow_uses_tier_c_ollama_shape_and_pack_matri
     assert "name: Supported Pack Nightly" in workflow
     assert 'default: main' in workflow
     assert "max-parallel: 1" in workflow
-    assert "github.event_name == 'pull_request' && 'ubuntu-latest' || 'blacksmith-2vcpu-ubuntu-2404'" in workflow
-    assert "github.event_name == 'pull_request' && 'ubuntu-latest' || 'blacksmith-32vcpu-ubuntu-2404'" in workflow
+    assert "runs-on: blacksmith-2vcpu-ubuntu-2404" in workflow
+    assert "runs-on: blacksmith-32vcpu-ubuntu-2404" in workflow
     assert 'DOLT_VERSION: "2.1.0"' in workflow
     assert "ANTHROPIC_BASE_URL: https://ollama.com" in workflow
     assert "ANTHROPIC_API_KEY: ${{ secrets.OLLAMA_API_KEY }}" in workflow
@@ -248,9 +248,9 @@ def test_dispatch_inference_workflow_is_not_the_scheduled_nightly() -> None:
 
 def test_ci_workflows_use_blacksmith_runner_labels() -> None:
     expected = {
-        ".github/workflows/ci.yml": "github.event_name == 'pull_request' && 'ubuntu-latest' || 'blacksmith-16vcpu-ubuntu-2404'",
-        ".github/workflows/codeql.yml": "github.event_name == 'pull_request' && 'ubuntu-latest' || 'blacksmith-16vcpu-ubuntu-2404'",
-        ".github/workflows/pack-release-compatibility.yml": "github.event_name == 'pull_request' && 'ubuntu-latest' || 'blacksmith-16vcpu-ubuntu-2404'",
+        ".github/workflows/ci.yml": "runs-on: blacksmith-16vcpu-ubuntu-2404",
+        ".github/workflows/codeql.yml": "runs-on: blacksmith-16vcpu-ubuntu-2404",
+        ".github/workflows/pack-release-compatibility.yml": "runs-on: blacksmith-16vcpu-ubuntu-2404",
     }
 
     for relative_path, marker in expected.items():

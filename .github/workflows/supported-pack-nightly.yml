@@ -46,7 +46,7 @@ env:
 jobs:
   static-contracts:
     name: static pack flow contracts
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'blacksmith-2vcpu-ubuntu-2404' }}
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - name: Check out gascity-packs
@@ -69,7 +69,7 @@ jobs:
   inference:
     name: ${{ matrix.pack }} / ${{ matrix.gate }}
     needs: static-contracts
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'blacksmith-32vcpu-ubuntu-2404' }}
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
