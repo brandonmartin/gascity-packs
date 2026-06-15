@@ -22,7 +22,9 @@ If the review-fix artifact includes `gc.build.review.v1` front matter, its
 only schema allowed coverage statuses: `covered`, `blocked`, `deferred`,
 `not_applicable`, `out_of_scope`, or `superseded`. Use `covered` for resolved
 findings; do not use `resolved`, `violated`, `approved`, or `changes_required`
-as coverage statuses.
+as coverage statuses. Include `rationale: <why this id is not covered>` on
+every non-`covered` coverage row. The Markdown coverage table remains ID/status
+only; the rationale belongs in YAML front matter.
 
 If both review lanes approve, perform a no-op pass, update workflow root
 metadata with `gc.build.code_review_status=approved`, and close with

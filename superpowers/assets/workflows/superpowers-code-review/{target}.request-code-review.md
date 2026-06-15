@@ -56,9 +56,12 @@ shape and make the ID/status pairs exactly match `trace.coverage`:
 Coverage statuses are not finding statuses or verdict statuses. Use only schema
 allowed coverage statuses: `covered`, `blocked`, `deferred`, `not_applicable`,
 `out_of_scope`, or `superseded`. For `status: changes_required`, use
-`blocked` for the coverage rows that are not yet satisfied. Do not use
-`violated`, `resolved`, `approved`, or `changes_required` as
-`trace.coverage[].status` or Markdown coverage table statuses.
+`blocked` for the coverage rows that are not yet satisfied, and include
+`rationale: <why this id is blocked>` on every non-`covered` coverage row. Do
+not use `violated`, `resolved`, `approved`, or `changes_required` as
+`trace.coverage[].status` or Markdown coverage table statuses. The Markdown
+coverage table remains ID/status only; the rationale belongs in YAML front
+matter.
 
 Close with `gc.outcome=pass`,
 `code_review.review_verdict=approve|iterate`,
