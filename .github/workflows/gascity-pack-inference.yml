@@ -84,7 +84,7 @@ env:
 jobs:
   supported-pack-formulas:
     name: supported pack formula inference gates
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 360
 
     steps:
