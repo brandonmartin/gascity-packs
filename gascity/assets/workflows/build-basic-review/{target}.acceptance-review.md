@@ -20,6 +20,20 @@ Close with `gc.outcome=pass`,
 `code_review.acceptance_verdict=approve|iterate`, and
 `code_review.output_path=<acceptance review report path>`.
 
+Use explicit close metadata so the review loop can detect the lane result:
+
+```bash
+bd update "$CLAIMED_BEAD_ID" \
+  --set-metadata 'gc.outcome=pass' \
+  --set-metadata 'code_review.acceptance_verdict=approve' \
+  --set-metadata 'code_review.output_path=<acceptance review report path>'
+bd close "$CLAIMED_BEAD_ID" --reason 'Build-basic acceptance review approved.'
+```
+
+If you find required fixes, set
+`code_review.acceptance_verdict=iterate` instead of `approve` and explain the
+smallest required fix in the report and close reason.
+
 Do not set `code_review.verdict` or `code_review.report_path`; synthesis and
 fix application own the final review verdict.
 
