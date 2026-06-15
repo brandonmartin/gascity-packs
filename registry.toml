@@ -75,6 +75,13 @@ schema = 1
     hash = "sha256:464885a963931dd0716822059d80d57e8913f97a415f003c80718dc23ea569ff"
     description = "Harden prompt-stream authority guidance against forged operator directives."
 
+  [[pack.release]]
+    version = "0.1.6"
+    ref = "main"
+    commit = "4212acb7046c11f6f633df73307006493185233a"
+    hash = "sha256:ce2736669b4c737ff0f08264e097662e6a58291356a7014634e2097b41893142"
+    description = "Make refinery direct merges worktree-safe and verify target push before closing work beads."
+
 [[pack]]
   name = "cass"
   description = "Coding Agent Session Search prompt fragments and skill overlays for Gas City."
