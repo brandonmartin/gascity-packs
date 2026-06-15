@@ -53,6 +53,13 @@ shape and make the ID/status pairs exactly match `trace.coverage`:
 | --- | --- |
 | SEC-001 | covered |
 
+Coverage statuses are not finding statuses or verdict statuses. Use only schema
+allowed coverage statuses: `covered`, `blocked`, `deferred`, `not_applicable`,
+`out_of_scope`, or `superseded`. For `status: changes_required`, use
+`blocked` for the coverage rows that are not yet satisfied. Do not use
+`violated`, `resolved`, `approved`, or `changes_required` as
+`trace.coverage[].status` or Markdown coverage table statuses.
+
 Close with `gc.outcome=pass`,
 `code_review.review_verdict=approve|iterate`,
 `code_review.review_report_path=<implementation review report path>`, and

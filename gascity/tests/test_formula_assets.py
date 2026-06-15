@@ -4238,6 +4238,9 @@ description = "Override sink that writes the base triage report contract."
         self.assertIn("producer:", request)
         self.assertIn("stage: request-code-review", request)
         self.assertIn("| ID | Status |", request)
+        self.assertIn("Use only schema\nallowed coverage statuses", request)
+        self.assertIn("For `status: changes_required`, use\n`blocked`", request)
+        self.assertIn("Do not use\n`violated`, `resolved`, `approved`, or `changes_required`", request)
         self.assertNotIn("code_review.verdict=done", request)
         self.assertNotIn("code_review.report_path=<", request)
 
@@ -4248,6 +4251,7 @@ description = "Override sink that writes the base triage report contract."
 
         self.assertIn("code_review.verdict=done|iterate", process)
         self.assertIn("code_review.report_path=<review fix summary path>", process)
+        self.assertIn("Use `covered` for resolved\nfindings", process)
         self.assertIn("gc.build.code_review_status=approved", process)
         self.assertIn("gc.build.code_review_status=draft", process)
 
