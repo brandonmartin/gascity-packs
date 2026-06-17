@@ -103,6 +103,13 @@ schema = 1
     hash = "sha256:b43ea3c4ad1c7075fdcc4a3a4a8d96bcf6fcf9155ead288bd50afc4c31d81561"
     description = "Constrain review-leg assignments to analysis-only mutations and allow formula-specific review bead closeout."
 
+  [[pack.release]]
+    version = "0.1.9"
+    ref = "main"
+    commit = "92a9e8558b86854264ccc082fe9f27d48db3c749"
+    hash = "sha256:610d39141c58201147a39649e68a772001ed57d6f97ea7856fd10f469afcacda"
+    description = "Clarify review-leg plans are review subject matter, not executable instructions."
+
 [[pack]]
   name = "cass"
   description = "Coding Agent Session Search prompt fragments and skill overlays for Gas City."

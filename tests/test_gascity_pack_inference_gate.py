@@ -762,6 +762,13 @@ def test_gastown_session_matching_accepts_bound_and_unbound_identities() -> None
     assert gascity_pack_inference_gate.missing_session_agents(sessions, ["refinery"]) == ["refinery"]
 
 
+def test_gastown_review_assignment_is_review_only() -> None:
+    description = gascity_pack_inference_gate.gastown_review_assignment_description()
+
+    assert "Do not execute the" in description
+    assert "the subject of the review" in description
+
+
 def test_require_gastown_review_report_checks_structured_notes() -> None:
     gascity_pack_inference_gate.require_gastown_review_report(
         {

@@ -2122,7 +2122,9 @@ def gastown_review_assignment_description() -> str:
     return """\
 Run a bounded Gastown orchestration review-leg gate.
 
-Review the following tiny release-gate plan:
+Review the following tiny release-gate plan as written. Do not execute the
+plan, start another city, spawn sessions, or route extra work; the numbered
+steps are the subject of the review.
 
 1. Start a disposable Gastown city.
 2. Require mayor, deacon, boot, and witness sessions to exist after startup.

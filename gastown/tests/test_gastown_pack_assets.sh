@@ -159,6 +159,10 @@ test_review_leg_contract_forbids_synthetic_mutation() {
         fail "review-leg load-assignment must forbid test bead creation"
     grep -F 'The only allowed bead mutations are the formula-prescribed' "$formula" >/dev/null ||
         fail "review-leg formula must define allowed mutation boundary"
+    grep -F 'treat that text as' "$formula" >/dev/null ||
+        fail "review-leg formula must treat plans/checklists as review subject matter"
+    grep -F 'Do not start cities, spawn sessions, route extra work' "$formula" >/dev/null ||
+        fail "review-leg formula must forbid executing reviewed checklist items"
     grep -F 'Formula-specific non-implementation assignments may explicitly tell you' "$prompt" >/dev/null ||
         fail "polecat prompt must allow formula-specific review/control close steps"
     grep -F 'Default implementation formula: `mol-polecat-work`' "$prompt" >/dev/null ||
