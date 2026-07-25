@@ -127,7 +127,7 @@ if [ -z "$NEXT" ]; then
   gc runtime drain-ack
   exit 1
 fi
-if ! gc bd update "$NEXT" --assignee="$GC_AGENT"; then
+if ! gc bd update "$NEXT" --assignee="$GC_AGENT" --status=in_progress; then
   echo "Could not assign next refinery wisp; not requesting restart."
   gc runtime drain-ack
   exit 1
@@ -250,7 +250,7 @@ if [ -z "$NEXT" ]; then
   gc runtime drain-ack
   exit 1
 fi
-if ! gc bd update "$NEXT" --assignee="$GC_AGENT"; then
+if ! gc bd update "$NEXT" --assignee="$GC_AGENT" --status=in_progress; then
   echo "Could not assign next refinery wisp; not burning."
   gc runtime drain-ack
   exit 1
@@ -351,7 +351,7 @@ TARGET=$(gc bd show $WORK --json | jq -r '.[0].metadata.target // "{{target_bran
        gc runtime drain-ack
        exit 1
      fi
-     if ! gc bd update "$NEXT" --assignee="$GC_AGENT"; then
+     if ! gc bd update "$NEXT" --assignee="$GC_AGENT" --status=in_progress; then
        echo "Could not assign next refinery wisp; not burning."
        gc runtime drain-ack
        exit 1
@@ -450,7 +450,7 @@ Target: $TARGET"
     gc runtime drain-ack
     exit 1
   fi
-  if ! gc bd update "$NEXT" --assignee="$GC_AGENT"; then
+  if ! gc bd update "$NEXT" --assignee="$GC_AGENT" --status=in_progress; then
     echo "Could not assign next refinery wisp; not burning."
     gc runtime drain-ack
     exit 1
@@ -1151,7 +1151,7 @@ if [ -z "$NEXT" ]; then
   gc runtime drain-ack
   exit 1
 fi
-if ! gc bd update "$NEXT" --assignee="$GC_AGENT"; then
+if ! gc bd update "$NEXT" --assignee="$GC_AGENT" --status=in_progress; then
   echo "Could not assign next refinery wisp; not burning."
   gc runtime drain-ack
   exit 1
