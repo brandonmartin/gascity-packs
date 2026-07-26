@@ -4,3 +4,10 @@ trigger = "condition"
 check = "bash $GC_PACK_DIR/assets/scripts/has-undelivered-escalates.sh"
 exec = "bash $GC_PACK_DIR/assets/scripts/deliver-rollup.sh"
 timeout = "2m"
+
+# City-wide fallback room, used only for rollup beads whose rig has no
+# chat binding of its own (per-rig bindings are resolved automatically
+# from `gc discord status`). Without this, such beads are skipped and
+# retried forever rather than reaching anyone — the ga-0562 failure.
+[order.env]
+GC_OVERSIGHT_DISCORD_BINDING = "room:1524584813158465627"
