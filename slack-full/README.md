@@ -430,10 +430,21 @@ pkill -HUP gc-slack-adapter
 ```
 
 The other three registries — `IDENTITY_STORE_PATH`,
-`HANDLE_ALIAS_STORE_PATH`, and the thread-session store — are written
-in-process by the adapter itself (via `/identity`, `/handle-alias`,
-and the launcher), not by the CLI, so they do not participate in
-SIGHUP reload.
+`HANDLE_ALIAS_STORE_PATH`, and the thread-session store — are
+**adapter-owned**: written in-process by the adapter itself (via
+`/identity`, `/handle-alias`, and the launcher), not by the CLI, so
+they do not participate in SIGHUP reload. Do not hand-edit them while
+the adapter is running — it rewrites them from its in-memory state at
+will, so manual edits are silently overwritten. The five files in the
+table above are the operator-editable surface; everything else under
+the store paths belongs to the adapter.
+
+`apps.json` is the one file written from **both** sides (the CLI's
+`import-app` and the adapter's OAuth callback). The adapter
+generation-stamps its reload snapshots so a SIGHUP racing an OAuth
+callback re-stages instead of rolling the in-memory view back to the
+pre-callback state; if the log shows `apps registry commit skipped`,
+re-send the SIGHUP.
 
 **Consumer-specific** (referenced by deployment scripts and prompts in
 sibling tooling, not by the adapter binary): variables consumed by
@@ -478,7 +489,12 @@ gc reload   # or: gc supervisor reload
 # 5. Verify the service is ready
 gc service list                            # expect: slack proxy_process ready
 curl --unix-socket "$(gc service show slack --json | jq -r .socket)" \
-     http://x/healthz                      # expect: 200 ok
+     http://x/healthz                      # expect: 200, first line "ok",
+                                           # then dispatch_dropped_total=N
+                                           # (inbound events dropped because
+                                           # the dispatch pool was saturated;
+                                           # a growing N means raise
+                                           # SLACK_DISPATCH_CONCURRENCY)
 
 # 6. Verify outbound publish through gc (replace the placeholders).
 #    GC_API_BASE_URL defaults to http://127.0.0.1:8372 on a single-host

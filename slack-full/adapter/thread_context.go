@@ -55,6 +55,22 @@ const defaultThreadContextLimit = 20
 // dispatchSem slot.
 const threadContextFetchTimeout = 5 * time.Second
 
+// threadContextCacheTTL bounds how long an idle (target, channel,
+// thread) entry survives. Slack threads rarely stay active for a
+// week; an evicted entry merely means the next mention on that
+// thread re-delivers the full prior window instead of the delta — a
+// one-time duplicate preamble, not context loss. Aligned with the
+// INBOUND_FILE_TTL default (7d) so both per-thread artifacts age out
+// on the same horizon.
+const threadContextCacheTTL = 7 * 24 * time.Hour
+
+// threadContextCacheMaxEntries hard-caps the cache so a pathological
+// workload (many distinct threads inside one TTL window) cannot grow
+// it without bound. When an insert pushes the map over the cap, the
+// oldest-touched entry is evicted; the same benign full-preamble
+// re-delivery applies.
+const threadContextCacheMaxEntries = 4096
+
 // threadContextCache tracks, per (target, channel, thread_ts) tuple,
 // the ts of the most recent thread-context preamble the adapter has
 // delivered for that target. The next inbound to the same target in
@@ -62,10 +78,11 @@ const threadContextFetchTimeout = 5 * time.Second
 // replies to include — peer activity newer than the last visit, not
 // the entire history again.
 //
-// Process-lifetime; no eviction. Workload is bounded by the count of
-// distinct (target, channel, thread) tuples observed, which is small
-// relative to per-message memory budgets. A target value of "" is a
-// valid key for channel-bound inbounds without an explicit @handle.
+// Entries are evicted after threadContextCacheTTL of inactivity
+// (both reads and writes refresh an entry's clock, so live threads
+// stay warm) and the map is capped at threadContextCacheMaxEntries
+// with oldest-touched eviction. A target value of "" is a valid key
+// for channel-bound inbounds without an explicit @handle.
 //
 // Errors during fetchThreadReplies do NOT advance the cached ts. A
 // transient Slack 5xx or missing-scope 401 leaves the lower bound
@@ -76,11 +93,28 @@ const threadContextFetchTimeout = 5 * time.Second
 // suppression of context loss is worse than a noisy log.
 type threadContextCache struct {
 	mu            sync.Mutex
-	lastDelivered map[string]string
+	lastDelivered map[string]threadContextEntry
+	// now is the clock; nil means time.Now. Injectable so tests can
+	// drive TTL expiry without sleeping.
+	now func() time.Time
+}
+
+// threadContextEntry pairs the delivered-up-to ts with the wall-clock
+// instant the entry was last read or written, which drives eviction.
+type threadContextEntry struct {
+	ts      string
+	touched time.Time
 }
 
 func newThreadContextCache() *threadContextCache {
-	return &threadContextCache{lastDelivered: make(map[string]string)}
+	return &threadContextCache{lastDelivered: make(map[string]threadContextEntry)}
+}
+
+func (c *threadContextCache) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
 }
 
 // lastDeliveredFor returns the ts up-to-which the adapter has already
@@ -95,9 +129,23 @@ func (c *threadContextCache) lastDeliveredFor(target, channel, threadTS string) 
 	if channel == "" || threadTS == "" {
 		return ""
 	}
+	key := threadCacheKey(target, channel, threadTS)
+	now := c.clock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.lastDelivered[threadCacheKey(target, channel, threadTS)]
+	entry, ok := c.lastDelivered[key]
+	if !ok {
+		return ""
+	}
+	if now.Sub(entry.touched) > threadContextCacheTTL {
+		delete(c.lastDelivered, key)
+		return ""
+	}
+	// Refresh the clock on read so a thread that is actively being
+	// followed never ages out mid-conversation.
+	entry.touched = now
+	c.lastDelivered[key] = entry
+	return entry.ts
 }
 
 // markDelivered records ts as the high-water mark for which preamble
@@ -112,16 +160,44 @@ func (c *threadContextCache) markDelivered(target, channel, threadTS, ts string)
 		return
 	}
 	key := threadCacheKey(target, channel, threadTS)
+	now := c.clock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if prev, ok := c.lastDelivered[key]; ok && prev >= ts {
+	if prev, ok := c.lastDelivered[key]; ok && prev.ts >= ts {
 		// Slack ts strings are lexically comparable in canonical
 		// 17-char "<seconds>.<microseconds>" form; a regression here
 		// would mean a stale handler raced ahead of a newer delivery,
-		// which is a no-op for cache semantics.
+		// which is a no-op for cache semantics — but the entry is
+		// still live, so refresh its clock.
+		prev.touched = now
+		c.lastDelivered[key] = prev
 		return
 	}
-	c.lastDelivered[key] = ts
+	c.lastDelivered[key] = threadContextEntry{ts: ts, touched: now}
+	if len(c.lastDelivered) > threadContextCacheMaxEntries {
+		c.evictLocked(now)
+	}
+}
+
+// evictLocked drops expired entries and, if the map is still over
+// cap, the single oldest-touched entry. Called with c.mu held, only
+// on the insert that pushed the map past the cap, so the O(n) scan
+// amortizes to once per overflow insert.
+func (c *threadContextCache) evictLocked(now time.Time) {
+	var oldestKey string
+	var oldestTouched time.Time
+	for key, entry := range c.lastDelivered {
+		if now.Sub(entry.touched) > threadContextCacheTTL {
+			delete(c.lastDelivered, key)
+			continue
+		}
+		if oldestKey == "" || entry.touched.Before(oldestTouched) {
+			oldestKey, oldestTouched = key, entry.touched
+		}
+	}
+	if len(c.lastDelivered) > threadContextCacheMaxEntries && oldestKey != "" {
+		delete(c.lastDelivered, oldestKey)
+	}
 }
 
 // threadCacheKey is the cache-map key shape for (target, channel,

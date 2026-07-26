@@ -479,3 +479,85 @@ func TestAppsRegistryLen(t *testing.T) {
 		t.Errorf("Len = %d, want 3", got)
 	}
 }
+
+// TestAppsRegistryCommitRefusesStaleSnapshot — a snapshot staged before
+// an in-process Set must not install: doing so would roll the in-memory
+// view back to pre-Set state (the gc-cby.9 OAuth-vs-SIGHUP race).
+func TestAppsRegistryCommitRefusesStaleSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := writeAppsRegistryFile(t, dir, map[string]appRecord{
+		"T1:A1": {WorkspaceID: "T1", AppID: "A1", SigningSecret: "s1"},
+	})
+	reg, err := newAppsRegistry(path)
+	if err != nil {
+		t.Fatalf("newAppsRegistry: %v", err)
+	}
+
+	snap, err := reg.Stage()
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	// OAuth callback lands between Stage and Commit.
+	if err := reg.Set(appRecord{WorkspaceID: "T1", AppID: "A2", SigningSecret: "oauth-secret"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	if reg.Commit(snap) {
+		t.Fatal("Commit installed a snapshot staged before Set, want refusal")
+	}
+	// The Set's record survived the refused commit.
+	if got := reg.Len(); got != 2 {
+		t.Errorf("Len after refused commit = %d, want 2 (Set preserved)", got)
+	}
+
+	// A fresh Stage sees the Set's file write and commits cleanly.
+	snap, err = reg.Stage()
+	if err != nil {
+		t.Fatalf("re-Stage: %v", err)
+	}
+	if !reg.Commit(snap) {
+		t.Fatal("fresh Commit refused, want install")
+	}
+	if got := reg.Len(); got != 2 {
+		t.Errorf("Len after fresh commit = %d, want 2", got)
+	}
+}
+
+// TestCommitAppsWithRetryConvergesAfterRace — the reload orchestrator's
+// retry path re-stages a stale snapshot and lands the post-Set state.
+func TestCommitAppsWithRetryConvergesAfterRace(t *testing.T) {
+	dir := t.TempDir()
+	path := writeAppsRegistryFile(t, dir, map[string]appRecord{
+		"T1:A1": {WorkspaceID: "T1", AppID: "A1", SigningSecret: "s1"},
+	})
+	reg, err := newAppsRegistry(path)
+	if err != nil {
+		t.Fatalf("newAppsRegistry: %v", err)
+	}
+
+	snap, err := reg.Stage()
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if err := reg.Set(appRecord{WorkspaceID: "T1", AppID: "A2", SigningSecret: "oauth-secret"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	commitAppsWithRetry(reg, snap)
+
+	// The retry re-staged from the file (which Set persisted), so both
+	// the original and the OAuth record are live.
+	if got := reg.Len(); got != 2 {
+		t.Errorf("Len after commitAppsWithRetry = %d, want 2", got)
+	}
+	recs := reg.GetByTeamID("T1")
+	var sawOAuth bool
+	for _, rec := range recs {
+		if rec.AppID == "A2" && rec.SigningSecret == "oauth-secret" {
+			sawOAuth = true
+		}
+	}
+	if !sawOAuth {
+		t.Errorf("OAuth record missing after retry converge: %+v", recs)
+	}
+}

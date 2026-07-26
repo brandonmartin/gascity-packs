@@ -197,6 +197,20 @@ your use case:
 See the [tiering design memo](./docs/design/slack-pack-tiering.md) for the
 rationale.
 
+### Contributor workflow packs
+
+Discipline for sending good work *to* another repo — planning, building,
+reviewing, and shipping the PRs your city authors.
+
+- [pr-pipeline](./pr-pipeline) ships the author-side PR workflows as formulas
+  (and four wrapper `pr` commands): plan an issue into a structured plan, map a
+  change's blast radius, self-review an outgoing PR against an 11-category
+  scorecard, and run a pre-push gate. None of them push or open PRs.
+- [contributing](./contributing) stitches the full external-contributor
+  lifecycle for `gastownhall/gascity` — write a good issue, find priority work,
+  open a PR, self-review — into one map. It imports `pr-pipeline` for steps 2-4
+  and adds the net-new `write-issue` issue-authoring discipline for step 1.
+
 ## Contributing
 
 Issues and pull requests are welcome. When a pack's surface changes, update
@@ -233,6 +247,39 @@ Before opening a PR, run:
 make registry-format-validate
 GC=/path/to/gc make registry-validate
 ```
+
+### Publishing a pack to the registry
+
+> **`registry.toml` describes packs that live in this repository only.** Its
+> `source` must be a `https://github.com/gastownhall/gascity-packs/tree/<ref>/<dir>`
+> URL (or the bare repository URL for a root pack) — anything else is rejected,
+> because the content hash can only be verified against this repository's own
+> history. If your pack lives in **your** repo, you do not need a PR here: publish
+> it directly to the Gas City registry under a scoped `<owner>/<pack>` name and you
+> keep ownership of it.
+
+`registry.toml` is the public catalog. Each `[[pack.release]]` carries a
+content hash that `validate_registry.py` enforces against the pack tree at the
+pinned `commit`. To register a new pack, commit it on your branch, then mint a
+ready-to-paste entry with the canonical hash:
+
+```bash
+# Print just the content hash for a pack at a given commit (default: HEAD)
+python3 validate_registry.py --compute <pack> --commit <ref>
+
+# Print a full [[pack]] block to paste into registry.toml
+python3 validate_registry.py --emit-entry <pack> \
+  --version 0.1.0 \
+  --pack-description "One-line catalog description." \
+  --release-description "Initial <pack> pack release."
+
+# Validate the catalog (default, no-arg invocation — same as CI)
+python3 validate_registry.py
+```
+
+The hash is derived from a sorted manifest of each tracked file's relative
+path, mode, and blob SHA-256 — so it is deterministic and reproducible. A
+maintainer re-pins releases to a single published commit at release time.
 
 ### Release compatibility and inference gates
 

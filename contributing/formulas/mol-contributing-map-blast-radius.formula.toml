@@ -1,0 +1,101 @@
+description = """
+Blast-radius mapping — describe the full impact surface of a proposed
+gastownhall/gascity change without making any modifications. The
+gc-orchestrated mode of the `map-blast-radius` skill: produces the same
+impact-surface map a contributor's coding agent makes by reading the skill,
+run inside a transient worker session so a city operator can dispatch it on a
+free-text scope. **No code is written.**
+
+THIN WRAPPER. This formula is orchestration only — it resolves the root
+bead, decomposes the scope, and records the output path. ALL analysis
+dimensions (callers and their execution contexts, downward callees, config
+sync chains, domain boundaries, concurrency, cross-repo contracts) live in
+the `map-blast-radius` skill, which is the single source of truth. The steps
+below say *apply the skill*; they do not restate it.
+
+The molecule root bead IS the control bead — run state is recorded in its
+notes via `gc bd update <root-id> --notes "<key>: <value>"`.
+
+## Contract
+
+1. Caller slings with `--var scope=<free-text>` (and optional `--var key=<id>`)
+2. Agent applies the `blast-radius` skill across two sequential steps
+3. Report written to `.gc/contributing/blast-radius/<key>.md`
+4. Root-bead notes record `report_path:`
+5. Agent exits — no implementation work happens here
+
+## Failure Modes
+
+| Situation | Action |
+|-----------|--------|
+| Repo is not a git checkout | Record cwd, close bead |
+| `scope` is empty or unparseable | Record error, close bead |
+| No callers found for any symbol | Note in report; not a failure |"""
+formula = "mol-contributing-map-blast-radius"
+version = 1
+
+[vars]
+[vars.scope]
+description = "Free-text scope description: symbols, files, or packages the change will touch (e.g. \\\"FuncXYZ in pkg/foo and the FieldBar struct field\\\")"
+required = true
+
+[vars.key]
+description = "Stable identifier used as the output filename (e.g. \\\"issue-1234\\\" or \\\"refactor-foo\\\"). Defaults to a slug derived from scope."
+default = ""
+
+[[steps]]
+id = "intake"
+title = "Resolve scope and the output path"
+description = """
+Confirm we are in a git repo and resolve the output key. Pure mechanism —
+the decomposition into analyzable targets is the skill's job; here we only
+establish where the report lands.
+
+```bash
+ROOT_ID=$(gc bd mol current --json | jq -r '.molecule_id')
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+    echo "Not in a git repository — cannot map blast radius."
+    gc bd close "$ROOT_ID" --reason "not a git checkout"
+    exit 1
+}
+cd "$REPO_ROOT"
+KEY="{{key}}"
+if [ -z "$KEY" ]; then
+    KEY=$(echo "{{scope}}" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//' | cut -c1-40)
+fi
+mkdir -p .gc/contributing/blast-radius
+REPORT_PATH=".gc/contributing/blast-radius/${KEY}.md"
+gc bd update "$ROOT_ID" --notes "scope: {{scope}}
+key: $KEY
+report_path: $REPORT_PATH
+status: in_progress"
+```
+
+**Exit criteria:** In repo root, scope recorded, report path determined.
+"""
+
+[[steps]]
+id = "map"
+title = "Apply the map-blast-radius skill and write the report"
+needs = ["intake"]
+description = """
+Apply the pack's own `map-blast-radius` skill — read
+`${GC_PACK_DIR}/skills/map-blast-radius/SKILL.md` and follow it end to end
+against `{{scope}}`. The skill is the single source of truth for every
+analysis dimension. Do not restate them here; run them from the skill, and
+write the skill's structured impact-surface report to the path the intake
+step recorded (`report_path:` in the root-bead notes) — do not assume
+`$REPORT_PATH` is still set; this step runs in its own shell.
+
+After writing the report, finalize:
+
+```bash
+ROOT_ID=$(gc bd mol current --json | jq -r '.molecule_id')
+REPORT_PATH=$(gc bd show "$ROOT_ID" --json | jq -r '.[0].notes // ""' | grep -m1 '^report_path:' | sed 's/^report_path: //')
+gc bd update "$ROOT_ID" --notes "status: complete"
+echo "[contributing-map-blast-radius] Complete for: {{scope}}"
+echo "[contributing-map-blast-radius]   Path: $REPORT_PATH"
+```
+
+**Exit criteria:** Report written per the blast-radius skill, root-bead notes finalized.
+"""

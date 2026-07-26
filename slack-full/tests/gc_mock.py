@@ -29,6 +29,29 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+_GO_DURATION_UNIT_SECONDS = {"s": 1.0, "m": 60.0, "h": 3600.0}
+
+
+def _parse_go_duration_seconds(value: str) -> float | None:
+    """Parse the single-unit Go duration forms the pack emits (10m, 2h, 30s).
+
+    Returns seconds, or None for empty/unparseable input (the real
+    endpoint 400s on garbage; the mock treats it as 'no since filter'
+    since the pack only ever sends well-formed values).
+    """
+    value = value.strip()
+    if not value:
+        return None
+    unit = value[-1]
+    if unit not in _GO_DURATION_UNIT_SECONDS:
+        return None
+    try:
+        magnitude = float(value[:-1])
+    except ValueError:
+        return None
+    return magnitude * _GO_DURATION_UNIT_SECONDS[unit]
+
+
 @dataclass
 class GcCall:
     """A single gc API call captured at the mock."""
@@ -140,11 +163,16 @@ class GcMock:
         provider: str = "slack",
         kind: str = "dm",
         message_id: str = "",
+        age_seconds: float = 0.0,
     ) -> None:
         """Seed an extmsg.inbound event so reply-current's lookup path resolves.
 
         Mirrors the payload shape produced by gc when a real Slack event_callback
         arrives at the slack-pack adapter and gets forwarded to /extmsg/inbound.
+
+        ``age_seconds`` backdates the event so tests can exercise the
+        client's escalating ``since`` windows; it is mock-internal and
+        never serialized into the response.
         """
         event = {
             "type": "extmsg.inbound",
@@ -155,6 +183,7 @@ class GcMock:
                 "kind": kind,
                 "message_id": message_id,
             },
+            "_age_seconds": age_seconds,
         }
         with self._lock:
             self._inbound_events.append(event)
@@ -294,20 +323,31 @@ class GcMock:
         req: http.server.BaseHTTPRequestHandler,
         query: dict[str, str],
     ) -> None:
-        """GET /events — scoped event-stream snapshot. Used for inbound-event lookup."""
+        """GET /events — scoped event-stream snapshot. Used for inbound-event lookup.
+
+        Mirrors the real endpoint's contract (huma_handlers_events.go):
+        events are returned OLDEST-first, ``since`` (Go duration string)
+        filters by age, ``limit`` keeps the oldest slice (the newest
+        events are what truncation drops), and ``total`` reports the
+        pre-truncation match count so clients can detect incompleteness.
+        """
         wanted_type = query.get("type", "")
         with self._lock:
             if wanted_type == "extmsg.inbound":
                 items = list(self._inbound_events)
             else:
                 items = []
-        # Apply limit if supplied (default behavior in the real API).
+        since = _parse_go_duration_seconds(query.get("since", ""))
+        if since is not None:
+            items = [e for e in items if float(e.get("_age_seconds", 0.0)) <= since]
+        items = [{k: v for k, v in e.items() if k != "_age_seconds"} for e in items]
         try:
-            limit = int(query.get("limit", "50"))
+            limit = int(query.get("limit", "100"))
         except ValueError:
-            limit = 50
-        items = items[-limit:]
-        resp = json.dumps({"items": items}).encode()
+            limit = 100
+        total = len(items)
+        items = items[:limit]
+        resp = json.dumps({"items": items, "total": total}).encode()
         req.send_response(200)
         req.send_header("Content-Type", "application/json")
         req.send_header("Content-Length", str(len(resp)))
@@ -319,13 +359,26 @@ class GcMock:
         req: http.server.BaseHTTPRequestHandler,
         query: dict[str, str],
     ) -> None:
-        """GET /extmsg/transcript?scope_id=&provider=&conversation_id=&kind=[&account_id=]"""
+        """GET /extmsg/transcript?scope_id=&provider=&conversation_id=&kind=[&account_id=][&order=][&limit=]
+
+        Mirrors the real endpoint's pagination contract (gascity#3128):
+        oldest-first default, ``order=desc``, ``limit`` default 100 /
+        max 500. Faithful truncation is what makes the stale-thread-root
+        regression reproducible in tests.
+        """
         provider = query.get("provider", "")
         conversation_id = query.get("conversation_id", "")
         kind = query.get("kind", "")
         key = (provider, conversation_id, kind)
         with self._lock:
             items = list(self._transcripts.get(key, []))
+        if query.get("order", "asc") == "desc":
+            items.reverse()
+        try:
+            limit = int(query.get("limit", "100"))
+        except ValueError:
+            limit = 100
+        items = items[: min(limit, 500)]
         resp = json.dumps({"items": items}).encode()
         req.send_response(200)
         req.send_header("Content-Type", "application/json")

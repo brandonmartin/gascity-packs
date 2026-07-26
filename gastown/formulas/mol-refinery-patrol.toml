@@ -127,7 +127,7 @@ if [ -z "$NEXT" ]; then
   gc runtime drain-ack
   exit 1
 fi
-if ! gc bd update "$NEXT" --assignee="$GC_AGENT"; then
+if ! gc bd update "$NEXT" --assignee="$GC_AGENT" --status=in_progress; then
   echo "Could not assign next refinery wisp; not requesting restart."
   gc runtime drain-ack
   exit 1
@@ -250,7 +250,7 @@ if [ -z "$NEXT" ]; then
   gc runtime drain-ack
   exit 1
 fi
-if ! gc bd update "$NEXT" --assignee="$GC_AGENT"; then
+if ! gc bd update "$NEXT" --assignee="$GC_AGENT" --status=in_progress; then
   echo "Could not assign next refinery wisp; not burning."
   gc runtime drain-ack
   exit 1
@@ -351,7 +351,7 @@ TARGET=$(gc bd show $WORK --json | jq -r '.[0].metadata.target // "{{target_bran
        gc runtime drain-ack
        exit 1
      fi
-     if ! gc bd update "$NEXT" --assignee="$GC_AGENT"; then
+     if ! gc bd update "$NEXT" --assignee="$GC_AGENT" --status=in_progress; then
        echo "Could not assign next refinery wisp; not burning."
        gc runtime drain-ack
        exit 1
@@ -367,19 +367,72 @@ TARGET=$(gc bd show $WORK --json | jq -r '.[0].metadata.target // "{{target_bran
    - Close this step after the current wisp is burned.
 
 3. If pre-existing on target:
-   - Check for duplicates first:
+
+   **Dedupe before filing. This is a gate, not a courtesy.** A baseline failure is
+   re-discovered on every branch gated against the same target, so one defect
+   surfaces once per branch you process. Filing per discovery turns a single fix
+   into N beads, N polecats, and N branches that then conflict with each other at
+   this very gate. The bead you are about to duplicate is usually sitting in YOUR
+   OWN queue — finding it needs no cross-agent knowledge, just a lookup.
+
+   - Derive a stable key from the failing test identifier, never from your prose
+     summary. Two agents describing one failure write different sentences but read
+     the same test name:
      ```bash
-     gc bd list --type=bug --status=open --search "<failure summary>"
+     FAILURE_TEST="TestGeneratedClientInSync"   # the failing test/case name
+     FAILURE_PKG="internal/api/genclient"       # its package/suite path
+     FAILURE_KEY=$(printf '%s::%s' "$FAILURE_PKG" "$FAILURE_TEST" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' '-' | sed -E 's/-+/-/g; s/^-|-$//g')
+     BASELINE_SHA=$(git rev-parse "origin/$TARGET")
      ```
-   - If a matching bug already exists: note its ID and proceed with merge.
-   - If no duplicate: file a new bead:
+   - Look for an existing bead. Filter on status only: **not** `--type` (it may be
+     filed as a task), **not** `--assignee` (it is probably assigned to you), and
+     always include `in_progress` — a fix that is already written and queued is
+     `in_progress`, which is precisely the bead worth finding.
      ```bash
-     gc bd create --type=bug --priority=1 --title="Pre-existing failure: <summary>"
+     STATUSES=open,in_progress,blocked,deferred
+     LOOKUP_OK=1
+     DUPES=$(gc bd list --status "$STATUSES" --metadata-field baseline_failure_key="$FAILURE_KEY" --limit 0 --json) || LOOKUP_OK=0
+     if [ "$LOOKUP_OK" = "1" ] && [ "$(printf '%s' "$DUPES" | jq 'length')" = "0" ]; then
+       DUPES=$(gc bd list --status "$STATUSES" --title-contains "$FAILURE_TEST" --limit 0 --json) || LOOKUP_OK=0
+     fi
+     if [ "$LOOKUP_OK" = "1" ] && [ "$(printf '%s' "$DUPES" | jq 'length')" = "0" ]; then
+       DUPES=$(gc bd list --status "$STATUSES" --desc-contains "$FAILURE_TEST" --limit 0 --json) || LOOKUP_OK=0
+     fi
+     printf '%s' "$DUPES" | jq -r '.[] | .id + " [" + .status + "] " + .title'
      ```
+     The key pass matches beads this step filed; the text passes catch beads filed
+     by hand or before the key existed. Use flags that exist — `bd list` has no
+     `--search`, and a lookup that errors returns nothing.
+   - **Read the candidates; do not auto-take the first hit.** The text passes match
+     on mention, so they also surface beads that merely *discuss* the failure
+     (incident reports, tracking beads, this very formula's own bug reports). A
+     match is a bead reporting *the same failing test on the same target*. Commenting
+     on a meta-bead instead of filing would silently drop a real failure — the one
+     outcome worse than a duplicate. Set `EXISTING` to the matching bead ID, or
+     leave it empty if none of the candidates is the same failure:
+     ```bash
+     EXISTING=            # e.g. EXISTING=ga-1h0z, or leave empty to file
+     ```
+   - Act on the result. **A failed lookup is not an all-clear.** If you could not
+     check, do not file:
+     ```bash
+     if [ "$LOOKUP_OK" != "1" ]; then
+       gc bd comment "$WORK" "Pre-existing failure on $TARGET@$BASELINE_SHA NOT filed: dedupe lookup failed. Failure: <summary>"
+     elif [ -n "$EXISTING" ]; then
+       gc bd comment "$EXISTING" "Re-observed on $TARGET@$BASELINE_SHA while gating $WORK ($BRANCH). Not re-filed."
+     else
+       gc bd create --type=bug --priority=1 --title="Pre-existing failure: <summary>" --metadata "$(jq -nc --arg k "$FAILURE_KEY" --arg s "$BASELINE_SHA" '{baseline_failure_key: $k, baseline_sha: $s}')"
+     fi
+     ```
+     Stamping `baseline_failure_key` on create is what makes the next discovery an
+     exact match instead of a text guess.
    - Proceed with merge (failure not caused by this branch)
 
-**GATE**: Cannot merge without all checks passing OR pre-existing bug filed/found.
-**FORBIDDEN**: Writing code to fix failures. You are a merge processor."""
+**GATE**: Cannot merge without all checks passing OR the pre-existing failure
+filed, matched to an existing bead, or — when the dedupe lookup itself failed —
+recorded as a comment on $WORK.
+**FORBIDDEN**: Writing code to fix failures. You are a merge processor.
+**FORBIDDEN**: Filing a baseline-failure bead without a completed dedupe lookup."""
 
 [[steps]]
 id = "merge-push"
@@ -450,7 +503,7 @@ Target: $TARGET"
     gc runtime drain-ack
     exit 1
   fi
-  if ! gc bd update "$NEXT" --assignee="$GC_AGENT"; then
+  if ! gc bd update "$NEXT" --assignee="$GC_AGENT" --status=in_progress; then
     echo "Could not assign next refinery wisp; not burning."
     gc runtime drain-ack
     exit 1
@@ -677,16 +730,91 @@ fi
 
 **If MERGE_STRATEGY = "direct" (default):**
 
-**0. Refuse a 0-diff branch (false-completion guard):**
+**0. Merge-state gate (already-merged short-circuit + false-completion guard):**
 
-A close-as-merged asserts "work was merged"; a branch that introduces no
-change vs its merge-base merging is definitionally false. Refuse it before
-touching `$TARGET`. Legit no-op resolutions MUST use wontfix/duplicate/
-not-planned, never merged — so this never blocks a real merge.
+Two failure modes share this gate, so evaluate them in one script that shares
+shell state — an early `exit` in the already-merged branch below then provably
+prevents the false-completion guard in this same script from running on a
+closed bead. That `exit` does NOT drain: an already-merged close is a real
+completion, so it skips the merge script and joins the normal path's
+Cleanup -> patrol-summary -> next-iteration tail (pour next wisp, burn this
+one), exactly like a normal merge. Only genuine errors drain-ack.
+
+- **Already merged (close, do NOT halt):** a previous refinery pass merged this
+  branch and the polecat crashed before the bead closed. That is a real
+  completion, so close it as merged with `merged_sha` forensics rather than let
+  the 0-diff guard escalate a done bead to a human. An ancestor check alone is
+  not enough: a 0-commit branch is trivially an ancestor of the target (its tip
+  is still the fork point), so gate the close on the branch also carrying >=1
+  commit since its recorded `metadata.fork_sha`. Without `fork_sha` recorded,
+  stay conservative and fall through to the false-completion guard.
+- **False completion (halt):** a branch that introduces no change vs its
+  merge-base is definitionally not a merge. Refuse it before touching `$TARGET`.
+  Legit no-op resolutions use wontfix/duplicate/not-planned, never merged — so
+  this never blocks a real merge.
+
 ```bash
-branch_has_real_change "origin/$TARGET" temp || \
-  halt_false_completion "$BRANCH" "$(git merge-base "origin/$TARGET" temp 2>/dev/null || printf '%s' "origin/$TARGET")"
+FORK_SHA=$(gc bd show "$WORK" --json | jq -r '.[0].metadata.fork_sha // empty')
+if ! git fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" "+refs/heads/${TARGET}:refs/remotes/origin/${TARGET}"; then
+  echo "git fetch failed; cannot evaluate merge state. STOP. Do not mutate bead state."
+  gc runtime drain-ack
+  exit 1
+fi
+git merge-base --is-ancestor "origin/$BRANCH" "origin/$TARGET"
+ANCESTOR_STATUS=$?
+case "$ANCESTOR_STATUS" in
+  0)
+    REAL_COMMITS=0
+    if [ -n "$FORK_SHA" ]; then
+      REAL_COMMITS=$(git rev-list --count "$FORK_SHA..origin/$BRANCH" 2>/dev/null || echo 0)
+    fi
+    if [ -n "$FORK_SHA" ] && [ "$REAL_COMMITS" -ge 1 ]; then
+      ALREADY_SHA=$(git rev-parse "origin/$BRANCH")
+      ALREADY_SHORT=$(git rev-parse --short "origin/$BRANCH")
+      if gc bd update "$WORK" \
+           --set-metadata merge_result=already_merged \
+           --set-metadata merged_sha="$ALREADY_SHA" \
+           --set-metadata merged_target="$TARGET" \
+           --unset-metadata rejection_reason && \
+         gc bd close "$WORK" --reason "Already merged to $TARGET at $ALREADY_SHORT (branch is an ancestor of target; closed instead of halting)"; then
+        echo "ALREADY_MERGED: origin/$BRANCH is an ancestor of origin/$TARGET with $REAL_COMMITS commit(s) since fork — closed $WORK as merged. Skip the merge script; run Cleanup, then patrol-summary + next-iteration."
+        exit 0
+      fi
+      # The update/close did not land (transient API failure). Do NOT report
+      # merged with the bead still open; STOP so a later patrol retries.
+      echo "ALREADY_MERGED close failed for $WORK; bead still open. STOP; a later patrol will retry."
+      gc runtime drain-ack
+      exit 1
+    fi
+    # Ancestor but no recorded real commits: a 0-commit branch. Fall through to
+    # the false-completion guard, which refuses to close it as merged.
+    ;;
+  1) : ;;  # not an ancestor -> a normal merge candidate; fall through
+  *)
+    echo "git merge-base --is-ancestor errored (status $ANCESTOR_STATUS); cannot evaluate already-merged. STOP. Do not mutate bead state."
+    gc runtime drain-ack
+    exit 1
+    ;;
+esac
+
+branch_has_real_change "origin/$TARGET" temp
+BHRC_STATUS=$?
+case "$BHRC_STATUS" in
+  0) : ;;  # verified real change -> continue to the merge script below
+  1) halt_false_completion "$BRANCH" "$(git merge-base "origin/$TARGET" temp 2>/dev/null || printf '%s' "origin/$TARGET")" ;;
+  *)
+    echo "branch_has_real_change could not evaluate temp vs origin/$TARGET (tool error, status $BHRC_STATUS). STOP. Do not mutate bead state."
+    gc runtime drain-ack
+    exit 1
+    ;;
+esac
 ```
+If this block closed the bead as already-merged, the merge is already done:
+SKIP the merge script (step 1 below) and go straight to **2. Cleanup**, then
+let this step complete so **patrol-summary** and **next-iteration** run (they
+pour the next wisp and burn this one) — the same tail a normal merge takes. Do
+NOT drain-ack here; that would strand the loop and leak the merged branch.
+Otherwise the branch has a verified real change and you continue to the merge.
 
 **1. Merge, push, verify, and close work bead:**
 
@@ -757,10 +885,20 @@ request and treats PR creation as the terminal handoff for this work bead.
 The same predicate covers the empty-PR / 0-commit concern: do not publish a
 pull request for a branch that introduces no change vs its merge-base. The
 PR handoff closes the bead, so an empty PR is the same false completion as
-an empty direct merge.
+an empty direct merge. A tool error (status 2) is not an empty branch — stop
+without mutating bead state rather than halt-escalating a healthy branch.
 ```bash
-branch_has_real_change "origin/$TARGET" temp || \
-  halt_false_completion "$BRANCH" "$(git merge-base "origin/$TARGET" temp 2>/dev/null || printf '%s' "origin/$TARGET")"
+branch_has_real_change "origin/$TARGET" temp
+BHRC_STATUS=$?
+case "$BHRC_STATUS" in
+  0) : ;;  # verified real change -> continue to publish the PR
+  1) halt_false_completion "$BRANCH" "$(git merge-base "origin/$TARGET" temp 2>/dev/null || printf '%s' "origin/$TARGET")" ;;
+  *)
+    echo "branch_has_real_change could not evaluate temp vs origin/$TARGET (tool error, status $BHRC_STATUS). STOP. Do not mutate bead state."
+    gc runtime drain-ack
+    exit 1
+    ;;
+esac
 ```
 
 **1. Push the rebased branch back to origin:**
@@ -1066,7 +1204,7 @@ if [ -z "$NEXT" ]; then
   gc runtime drain-ack
   exit 1
 fi
-if ! gc bd update "$NEXT" --assignee="$GC_AGENT"; then
+if ! gc bd update "$NEXT" --assignee="$GC_AGENT" --status=in_progress; then
   echo "Could not assign next refinery wisp; not burning."
   gc runtime drain-ack
   exit 1

@@ -1,0 +1,53 @@
+# oversight-rig
+
+A drop-in Gas City pack that **disaggregates project-level work scoping out of the mayor**. It adds one always-on, rig-scoped `project-lead` role per rig, so the mayor stops being the bottleneck for every project's day-to-day triage and dispatch.
+
+## The problem it solves
+
+In a single-mayor city, the mayor ends up in the minutiae of every project's work scoping — what to dispatch, what's blocked, what to escalate — across every rig at once. That doesn't scale.
+
+## The model
+
+```
+mayor (city, unchanged) ──── plans cross-cutting work, handles escalations
+
+  rig: foo                      rig: bar                  …
+  project-lead-foo              project-lead-bar
+  • bounded to foo's beads      • bounded to bar's beads
+  • reads foo/.gc/              • reads bar/.gc/
+    project-brief.md              project-brief.md
+  • dispatches its own          • dispatches its own
+    ready work directly           ready work directly
+```
+
+- **`project-lead`** (rig scope, always-on, one per rig)
+  - Bounded to a single rig's beads. Reads its persona, current focus, and escalation triggers from `<rig>/.gc/project-brief.md` — each project owns its own scoping context, so it never piles onto the mayor.
+  - Triages its rig every tick and **dispatches ready, in-scope work in its own rig directly** — it does not route every dispatch through the mayor.
+  - Judges severity (info vs escalate) and writes structured rollup beads.
+- **The mayor stays unchanged** and shrinks to what is genuinely cross-cutting: planning work that spans rigs, and reacting to escalations.
+
+## Deterministic escalation (no relay agent)
+
+The project-lead writes a rollup bead labeled `severity:escalate`. A scheduled order (`escalate-rollups`) uses a mechanical condition trigger that checks for undelivered escalate-severity rollups and delivers them via extmsg — **no second agent decides "is this escalation-worthy."** The judgment is made once, by the agent with the right context, and the rollup bead is the audit trail. Human replies route straight back to the bound project-lead.
+
+## What's in the pack
+
+- `agents/project-lead/` — the role (agent config, prompt template, and a `project-brief.template.md` to copy per rig)
+- `orders/` — `patrol-project-leads` (triage cadence) and `escalate-rollups` (deterministic delivery)
+- `assets/scripts/` — the delivery script and a rig→channel resolver
+
+## Requirements
+
+- An extmsg/slack adapter in the city for outbound delivery and inbound replies — **compose this pack with your slack pack** (e.g. `slack-full`, `slack-channel`, or `slack-mini`). This pack ships only the oversight role and its escalation machinery, not a slack bridge.
+- Optional: the project-lead's rig-scoped dispatch examples use convoy formulas (`mol-decompose`, `mol-pr-from-issue`) supplied by a workflow pack (e.g. `gastown`). The role works without them.
+
+## Install
+
+1. Add the pack to your `city.toml` and stamp a `project-lead` per rig.
+2. For each rig under oversight, author its brief:
+   ```bash
+   cp agents/project-lead/project-brief.template.md <rig-root>/.gc/project-brief.md
+   # then edit the brief to fit the project
+   ```
+3. Bind each rig's `project-lead` session to that rig's channel via your slack pack so escalations deliver and replies route back.
+4. `gc supervisor reload` — picks up the new agents and orders.

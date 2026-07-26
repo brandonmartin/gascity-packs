@@ -37,9 +37,9 @@ import (
 // fully supported: subteam-aliases.json is a static file the operator
 // populates manually. No usergroups.list fetch is performed by v1.
 type subteamAliasMap struct {
-	mu         sync.RWMutex
-	byID       map[string]string // subteam_id -> handle
-	diskPath   string
+	mu       sync.RWMutex
+	byID     map[string]string // subteam_id -> handle
+	diskPath string
 }
 
 // subteamAliasSnapshot is a parsed-but-not-yet-committed view of

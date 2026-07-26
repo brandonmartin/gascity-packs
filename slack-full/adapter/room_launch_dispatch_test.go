@@ -122,7 +122,7 @@ func TestRoomLaunchDispatchSpawnOnMissCreatesSessionAndPostsFirstMessage(t *test
 		handlePrefix:        "@",
 		slackBotToken:       "xoxb-test",
 		dispatchConcurrency: 8,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:         defaultTestDispatchSem,
 	}
 	aliasReg := newTestHandleAliasRegistry(t)
 	threadReg := newTestThreadSessionRegistry(t)
@@ -220,7 +220,7 @@ func TestRoomLaunchDispatchReuseOnHitSkipsCreateAndPostsToExistingSession(t *tes
 		handlePrefix:        "@",
 		slackBotToken:       "xoxb-test",
 		dispatchConcurrency: 8,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:         defaultTestDispatchSem,
 	}
 	aliasReg := newTestHandleAliasRegistry(t)
 	threadReg := newTestThreadSessionRegistry(t)
@@ -277,7 +277,7 @@ func TestRoomLaunchDispatchChannelNotEnabledEmitsActionableEphemeral(t *testing.
 		handlePrefix:        "@",
 		slackBotToken:       "xoxb-test",
 		dispatchConcurrency: 8,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:         defaultTestDispatchSem,
 	}
 	aliasReg := newTestHandleAliasRegistry(t)
 	threadReg := newTestThreadSessionRegistry(t)
@@ -329,7 +329,7 @@ func TestRoomLaunchDispatchSpawnFailureLeavesRegistryEmpty(t *testing.T) {
 		handlePrefix:        "@",
 		slackBotToken:       "xoxb-test",
 		dispatchConcurrency: 8,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:         defaultTestDispatchSem,
 	}
 	aliasReg := newTestHandleAliasRegistry(t)
 	threadReg := newTestThreadSessionRegistry(t)

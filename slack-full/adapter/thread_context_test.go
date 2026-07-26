@@ -112,7 +112,7 @@ func TestThreadContext_FirstMentionPrependsPreamble(t *testing.T) {
 		slackBotToken:           "xoxb-fake",
 		slackThreadContextLimit: 20,
 		threadContextCache:      newThreadContextCache(),
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:             defaultTestDispatchSem,
 	}
 	rawMsg, _ := json.Marshal(slackMessageEvent{
 		Type:     "message",
@@ -198,7 +198,7 @@ func TestThreadContext_SecondMentionWithoutNewActivityNoPreamble(t *testing.T) {
 		slackBotToken:           "xoxb-fake",
 		slackThreadContextLimit: 20,
 		threadContextCache:      newThreadContextCache(),
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:             defaultTestDispatchSem,
 	}
 
 	first, _ := json.Marshal(slackMessageEvent{
@@ -258,7 +258,7 @@ func TestThreadContext_NonThreadInboundSkipsFetch(t *testing.T) {
 		slackBotToken:           "xoxb-fake",
 		slackThreadContextLimit: 20,
 		threadContextCache:      newThreadContextCache(),
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:             defaultTestDispatchSem,
 	}
 	// thread_ts empty: not a reply; no preamble path.
 	rawMsg, _ := json.Marshal(slackMessageEvent{
@@ -301,7 +301,7 @@ func TestThreadContext_ThreadParentSkipsFetch(t *testing.T) {
 		slackBotToken:           "xoxb-fake",
 		slackThreadContextLimit: 20,
 		threadContextCache:      newThreadContextCache(),
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:             defaultTestDispatchSem,
 	}
 	rawMsg, _ := json.Marshal(slackMessageEvent{
 		Type:     "message",
@@ -355,7 +355,7 @@ func TestThreadContext_NoPriorsAfterFilteringEmitsNoPreamble(t *testing.T) {
 		slackBotToken:           "xoxb-fake",
 		slackThreadContextLimit: 20,
 		threadContextCache:      newThreadContextCache(),
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:             defaultTestDispatchSem,
 	}
 	rawMsg, _ := json.Marshal(slackMessageEvent{
 		Type:     "message",
@@ -412,7 +412,7 @@ func TestThreadContext_FetchFailureRetriesNextInbound(t *testing.T) {
 		slackBotToken:           "xoxb-fake",
 		slackThreadContextLimit: 20,
 		threadContextCache:      newThreadContextCache(),
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:             defaultTestDispatchSem,
 	}
 	mk := func(ts string) []byte {
 		raw, _ := json.Marshal(slackMessageEvent{
@@ -493,7 +493,7 @@ func TestThreadContext_CrossAgentDeltaVisibility(t *testing.T) {
 		slackBotToken:           "xoxb-fake",
 		slackThreadContextLimit: 20,
 		threadContextCache:      newThreadContextCache(),
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:             defaultTestDispatchSem,
 	}
 	aliasReg := newTestHandleAliasRegistry(t)
 
@@ -602,7 +602,7 @@ func TestThreadContext_IsolationAcrossThreads(t *testing.T) {
 		slackBotToken:           "xoxb-fake",
 		slackThreadContextLimit: 20,
 		threadContextCache:      newThreadContextCache(),
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:             defaultTestDispatchSem,
 	}
 
 	// Mayor is mentioned in thread A → cache pulls the prior.
@@ -709,6 +709,79 @@ func TestThreadContextCache_LastDeliveredRoundTrip(t *testing.T) {
 	c.markDelivered("mayor", "C1", "T1", "")
 	if got := c.lastDeliveredFor("mayor", "C1", "T1"); got != "100.000005" {
 		t.Errorf("invalid markDelivered calls leaked into store; got %q want %q", got, "100.000005")
+	}
+}
+
+func TestThreadContextCache_TTLEviction(t *testing.T) {
+	t.Parallel()
+	c := newThreadContextCache()
+	clock := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	c.now = func() time.Time { return clock }
+
+	c.markDelivered("mayor", "C1", "T1", "100.000001")
+	c.markDelivered("PL", "C1", "T2", "100.000002")
+
+	// Within TTL: both entries live; the read refreshes mayor's clock.
+	clock = clock.Add(threadContextCacheTTL - time.Hour)
+	if got := c.lastDeliveredFor("mayor", "C1", "T1"); got != "100.000001" {
+		t.Errorf("within TTL = %q, want %q", got, "100.000001")
+	}
+
+	// Past PL's TTL but inside mayor's refreshed window: PL ages out,
+	// mayor survives because the read above re-touched it.
+	clock = clock.Add(2 * time.Hour)
+	if got := c.lastDeliveredFor("PL", "C1", "T2"); got != "" {
+		t.Errorf("expired entry = %q, want \"\" (TTL eviction)", got)
+	}
+	if got := c.lastDeliveredFor("mayor", "C1", "T1"); got != "100.000001" {
+		t.Errorf("read-refreshed entry = %q, want %q (touch on read keeps live threads warm)", got, "100.000001")
+	}
+
+	// The expired entry was deleted, not just hidden.
+	c.mu.Lock()
+	_, stillThere := c.lastDelivered[threadCacheKey("PL", "C1", "T2")]
+	c.mu.Unlock()
+	if stillThere {
+		t.Error("expired entry still present in map after read")
+	}
+
+	// A write to a fully-expired cache starts fresh.
+	clock = clock.Add(2 * threadContextCacheTTL)
+	c.markDelivered("mayor", "C1", "T1", "200.000001")
+	if got := c.lastDeliveredFor("mayor", "C1", "T1"); got != "200.000001" {
+		t.Errorf("after re-mark = %q, want %q", got, "200.000001")
+	}
+}
+
+func TestThreadContextCache_CapEvictsOldestTouched(t *testing.T) {
+	t.Parallel()
+	c := newThreadContextCache()
+	clock := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	c.now = func() time.Time { return clock }
+
+	// Fill to cap; entry i is touched at base+i seconds, so T0 is the
+	// oldest when the overflow insert arrives.
+	for i := 0; i < threadContextCacheMaxEntries; i++ {
+		clock = clock.Add(time.Second)
+		c.markDelivered("mayor", "C1", fmt.Sprintf("T%d", i), "100.000001")
+	}
+	clock = clock.Add(time.Second)
+	c.markDelivered("mayor", "C1", "T-overflow", "100.000001")
+
+	c.mu.Lock()
+	size := len(c.lastDelivered)
+	c.mu.Unlock()
+	if size != threadContextCacheMaxEntries {
+		t.Errorf("cache size after overflow = %d, want %d (cap enforced)", size, threadContextCacheMaxEntries)
+	}
+	if got := c.lastDeliveredFor("mayor", "C1", "T0"); got != "" {
+		t.Errorf("oldest entry = %q, want \"\" (evicted on overflow)", got)
+	}
+	if got := c.lastDeliveredFor("mayor", "C1", "T-overflow"); got != "100.000001" {
+		t.Errorf("overflow entry = %q, want %q (newest survives)", got, "100.000001")
+	}
+	if got := c.lastDeliveredFor("mayor", "C1", "T1"); got != "100.000001" {
+		t.Errorf("second-oldest entry = %q, want %q (only one eviction needed)", got, "100.000001")
 	}
 }
 
@@ -864,9 +937,9 @@ func TestFormatThreadContextPreamble_FiltersAndFormats(t *testing.T) {
 // it overwrites the package-level slackAPIBase var.
 func TestFetchThreadReplies_QueryAndAuth(t *testing.T) {
 	var (
-		mu             sync.Mutex
-		capturedAuth   string
-		capturedQuery  string
+		mu            sync.Mutex
+		capturedAuth  string
+		capturedQuery string
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()

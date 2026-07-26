@@ -356,8 +356,8 @@ def test_reply_current_thread_current_pulls_thread_ts_from_transcript(
         kind="room",
     )
     # Seed two transcript entries: an outbound followed by the inbound we
-    # want resolved. --thread-current should walk in reverse and pick
-    # the inbound one.
+    # want resolved. --thread-current receives entries newest-first
+    # (order=desc) and picks the first inbound.
     gc_mock.register_transcript_entry(
         conversation_id="C0THREADCHAN",
         kind="room",
@@ -409,6 +409,73 @@ def test_reply_current_thread_current_pulls_thread_ts_from_transcript(
         f"first transcript lookup must use kind=room; got query={first_transcript.query!r}"
     )
     assert first_transcript.query.get("conversation_id") == "C0THREADCHAN"
+
+
+def test_reply_current_thread_current_finds_newest_inbound_in_large_transcript(
+    gc_mock: GcMock,
+    slack_mock: SlackMock,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--thread-current must resolve the newest inbound on a busy transcript.
+
+    Regression pin for the oldest-first truncation bug (gpk-r89): with the
+    endpoint's oldest-first default and bounded limit, the most recent
+    inbound never appeared in the response on busy conversations and the
+    reply threaded under a stale root. The fix queries ``order=desc``
+    (gascity#3128). 130 entries puts the newest inbound past the
+    endpoint's default limit of 100, which GcMock truncates faithfully.
+    """
+    gc_mock.register_inbound_event(
+        target_session="gc-test-session",
+        conversation_id="C0BUSYCHAN",
+        provider="slack",
+        kind="room",
+    )
+    # 130 entries, oldest..newest. Odd indices inbound, even outbound:
+    # entry 130 (newest) is outbound, entry 129 is the newest inbound.
+    total = 130
+    for i in range(1, total + 1):
+        gc_mock.register_transcript_entry(
+            conversation_id="C0BUSYCHAN",
+            kind="room",
+            provider_message_id=f"1700000000.{i:06d}",
+            message_kind="inbound" if i % 2 else "outbound",
+        )
+    newest_inbound_ts = f"1700000000.{total - 1:06d}"
+
+    rc = _import_reply_current_module()
+    exit_code = rc.main([
+        "--session", "gc-test-session",
+        "--thread-current",
+        "--body", "threading under the newest inbound",
+    ])
+    assert exit_code is None or exit_code == 0
+    capsys.readouterr()  # drain stdout
+
+    slack_calls = slack_mock.calls()
+    assert len(slack_calls) == 1, (
+        f"expected 1 publish, got {len(slack_calls)}: {slack_calls!r}"
+    )
+    assert slack_calls[0].thread_ts == newest_inbound_ts, (
+        f"--thread-current must thread under the newest inbound "
+        f"({newest_inbound_ts}) even when the transcript exceeds the "
+        f"endpoint's default window; got {slack_calls[0].thread_ts!r}"
+    )
+
+    # The lookup must request newest-first explicitly — relying on the
+    # oldest-first default is exactly the regression this test pins.
+    transcript_calls = [
+        c for c in gc_mock.calls() if c.path.endswith("/extmsg/transcript")
+    ]
+    assert transcript_calls, "expected at least one /extmsg/transcript GET"
+    assert transcript_calls[0].query.get("order") == "desc", (
+        f"transcript lookup must use order=desc; got query="
+        f"{transcript_calls[0].query!r}"
+    )
+    assert transcript_calls[0].query.get("limit") == "500", (
+        f"transcript lookup must carry the limit=500 defensive cap; "
+        f"got query={transcript_calls[0].query!r}"
+    )
 
 
 def test_reply_current_resolves_conversation_from_inbound_event(

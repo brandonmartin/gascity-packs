@@ -180,11 +180,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 )
 
 const (
@@ -238,6 +240,21 @@ var dispatchInflightWG sync.WaitGroup
 // from a test-style cfg without a sem (in which case the dropped-load
 // log line is the intended fail-safe behavior). sec-S-04.
 func (c config) acquireDispatchSlot() (release func(), capacity int, ok bool) {
+	release, capacity, ok = c.tryAcquireDispatchSlot()
+	if !ok {
+		dispatchDroppedTotal.Add(1)
+	}
+	return release, capacity, ok
+}
+
+// tryAcquireDispatchSlot attempts to take a dispatch slot WITHOUT counting
+// a failed acquire as a drop. The legacy inbound path wraps this via
+// acquireDispatchSlot (a miss there is a genuine dropped delivery). The
+// company path uses this directly: a company receipt that finds no slot
+// stays durably pending for the sweep — backpressure, not a drop — so
+// counting it would pollute dispatch_dropped_total and mask real legacy
+// loss (F10).
+func (c config) tryAcquireDispatchSlot() (release func(), capacity int, ok bool) {
 	sem := c.dispatchSem
 	semCap := cap(sem)
 	select {
@@ -259,7 +276,14 @@ type config struct {
 	accountID           string
 	slackBotToken       string
 	slackSigningKey     string
-	registerOnStart     bool
+	// slackAppID is the switchboard app's own Slack api_app_id (SLACK_APP_ID).
+	// When set, an event_callback whose api_app_id equals it verifies against
+	// the env signing secret ONLY (Phase 4 verification rule 2, the rooms path)
+	// — never the legacy trial set and never a registered agent record that
+	// happens to share the id. Empty preserves the pre-Phase-4 behavior (the
+	// switchboard's events fall through to the legacy lookupSigningSecrets path).
+	slackAppID      string
+	registerOnStart bool
 	// identityStorePath is the JSON file backing the per-session Slack
 	// identity registry (chat:write.customize username/avatar overrides).
 	// Persisted so adapter restarts don't strip identity from running
@@ -414,7 +438,7 @@ type config struct {
 	oauthSlackBaseURL string
 	// cityPath is the on-disk root of the gc city this adapter is bound
 	// to. Sourced from GC_CITY_PATH; required for the rig-target
-	// dispatch path (cby.18.3) which must shell `bd create` inside the
+	// dispatch path (cby.18.3) which must shell `gc bd create` inside the
 	// rig's workdir (read from <cityPath>/.beads/routes.jsonl) and
 	// `gc sling` from the city root. Empty when GC_CITY_PATH is unset;
 	// the rig dispatch path surfaces a fix-it ephemeral in that case.
@@ -430,10 +454,80 @@ type config struct {
 	// SLACK_THREAD_CONTEXT_LIMIT, defaulting to
 	// defaultThreadContextLimit. gc-px8.5.
 	slackThreadContextLimit int
+	// companyDirectoryPath / companyBindingsPath / companyIngressDir are
+	// the Slack company-rooms (Phase 1) registry locations. The two JSON
+	// registries resolve exactly like the six atomic registries
+	// (env override > <GC_CITY_PATH>/.gc/slack/<file> >
+	// /tmp/gc-slack-adapter/<file>); the ingress dir mirrors the
+	// thread_sessions.json resolution with a chat-ingress/ leaf. The
+	// Python CLI (scripts/slack_company_directory.py) resolves the same
+	// files. Sourced from SLACK_COMPANY_DIRECTORY_PATH,
+	// SLACK_COMPANY_BINDINGS_PATH, SLACK_COMPANY_INGRESS_DIR.
+	companyDirectoryPath string
+	companyBindingsPath  string
+	companyIngressDir    string
+	// companyDMBindingsPath / companyAgentAppsPath are the Phase 4 per-agent
+	// DM registries (dm_bindings.json, agent_apps.json), resolved exactly
+	// like the two Phase 1 registries above (env override >
+	// <GC_CITY_PATH>/.gc/slack/<file> > /tmp default). Sourced from
+	// SLACK_COMPANY_DM_BINDINGS_PATH and SLACK_COMPANY_AGENT_APPS_PATH.
+	companyDMBindingsPath string
+	companyAgentAppsPath  string
+	// companyVerifySessions gates the advisory session-existence guard
+	// (Phase 4): when set, delivery checks GET /v0/city/{city}/session/{id}
+	// before the first attempt per (city, session). Advisory only — a guard
+	// error or a 404/409 never terminalizes; it just leaves the target
+	// pending for the sweep. Sourced from SLACK_COMPANY_VERIFY_SESSIONS.
+	companyVerifySessions bool
+	// Phase 2 shared-state directories (secrets/intents/delegations/turns/
+	// locks). Resolved exactly like the Python side: env override >
+	// <GC_CITY_PATH>/.gc/slack/<leaf> > /tmp/gc-slack-adapter/<leaf>. The Go
+	// ingress path reads intents (correlation + stale count), reads/writes
+	// delegation records (result claims), writes current-turn pointers, and
+	// takes advisory locks; the secrets dir is Python-only but resolved here
+	// for parity / config visibility.
+	companySecretsDir     string
+	companyIntentsDir     string
+	companyDelegationsDir string
+	companyTurnsDir       string
+	companyLocksDir       string
+	// companyCityAPIs maps a city-qualified binding's city name to that
+	// city's supervisor API base URL (each city runs its own supervisor on
+	// this host). Parsed from SLACK_COMPANY_CITY_APIS as
+	// "city=http://127.0.0.1:8377,other=http://127.0.0.1:8374". The
+	// adapter's own city never needs an entry.
+	companyCityAPIs map[string]string
+
+	// companySelfBotUserID is the switchboard app's own bot user id,
+	// excluded from wake routing so the switchboard never wakes itself.
+	// Optional (empty OK in Phase 1). Sourced from
+	// SLACK_SWITCHBOARD_BOT_USER_ID.
+	companySelfBotUserID string
+	// companyVisibleAcks gates the config-driven visible-ack reactions
+	// (Phase 3b). Off by default: unset/empty/"0" = off, anything else = on.
+	// Sourced from SLACK_COMPANY_VISIBLE_ACKS.
+	companyVisibleAcks bool
+	// companyGateway owns the durable-admission + delivery path for
+	// imported company rooms. Nil disables the company path entirely —
+	// every inbound then flows through the legacy path byte-for-byte.
+	// Wired in main() before any handler closes over the cfg value.
+	companyGateway *companyGateway
 }
 
 func loadConfig() (config, error) {
 	return loadConfigFromEnv(os.Getenv)
+}
+
+// companyStateDirDefault resolves a Phase 2 shared-state directory default:
+// <GC_CITY_PATH>/.gc/slack/<leaf> when the city path is set, else
+// /tmp/gc-slack-adapter/<leaf>. The env override is applied by the caller.
+// This mirrors the Python company outbound module's path resolution leaf for
+// leaf.
+func companyStateDirDefault(cityPath, leaf string) string {
+	if cityPath != "" {
+		return filepath.Join(cityPath, ".gc", "slack", leaf)
+	}
+	return filepath.Join("/tmp/gc-slack-adapter", leaf)
 }
 
 // loadConfigFromEnv reads adapter configuration from a getenv function. When
@@ -460,6 +554,7 @@ func loadConfigFromEnv(getenv func(string) string) (config, error) {
 		accountID:            getenv("SLACK_WORKSPACE_ID"),
 		slackBotToken:        getenv("SLACK_BOT_TOKEN"),
 		slackSigningKey:      getenv("SLACK_SIGNING_SECRET"),
+		slackAppID:           getenv("SLACK_APP_ID"),
 		registerOnStart:      envOrFn("REGISTER_ON_START", "true") == "true",
 		identityStorePath:    envOrFn("IDENTITY_STORE_PATH", "/tmp/gc-slack-adapter/identities.json"),
 		handlePrefix:         envOrFn("HANDLE_PREFIX", "@"),
@@ -502,6 +597,67 @@ func loadConfigFromEnv(getenv func(string) string) (config, error) {
 	cfg.roomLaunchPath = envOrFn("GC_SLACK_ROOM_LAUNCH_FILE", defaultRoomLaunchPath)
 	cfg.subteamAliasStorePath = envOrFn("SLACK_SUBTEAM_ALIAS_FILE", defaultSubteamAliasPath)
 	cfg.userAliasStorePath = envOrFn("SLACK_USER_ALIAS_FILE", defaultUserAliasPath)
+
+	// Company-rooms (Phase 1) registry + ingress paths. The two JSON
+	// registries follow the same city-rooted-then-/tmp default with an
+	// env override as the six atomic registries; the ingress dir mirrors
+	// thread_sessions.json resolution with a chat-ingress/ leaf. These
+	// MUST match scripts/slack_company_directory.py file for file.
+	defaultCompanyDirectoryPath := "/tmp/gc-slack-adapter/company_directory.json"
+	defaultCompanyBindingsPath := "/tmp/gc-slack-adapter/company_bindings.json"
+	defaultCompanyDMBindingsPath := "/tmp/gc-slack-adapter/dm_bindings.json"
+	defaultCompanyAgentAppsPath := "/tmp/gc-slack-adapter/agent_apps.json"
+	defaultCompanyIngressDir := "/tmp/gc-slack-adapter/chat-ingress"
+	if cfg.cityPath != "" {
+		defaultCompanyDirectoryPath = filepath.Join(cfg.cityPath, ".gc", "slack", "company_directory.json")
+		defaultCompanyBindingsPath = filepath.Join(cfg.cityPath, ".gc", "slack", "company_bindings.json")
+		defaultCompanyDMBindingsPath = filepath.Join(cfg.cityPath, ".gc", "slack", "dm_bindings.json")
+		defaultCompanyAgentAppsPath = filepath.Join(cfg.cityPath, ".gc", "slack", "agent_apps.json")
+		defaultCompanyIngressDir = filepath.Join(cfg.cityPath, ".gc", "slack", "chat-ingress")
+	}
+	cfg.companyDirectoryPath = envOrFn("SLACK_COMPANY_DIRECTORY_PATH", defaultCompanyDirectoryPath)
+	cfg.companyBindingsPath = envOrFn("SLACK_COMPANY_BINDINGS_PATH", defaultCompanyBindingsPath)
+	cfg.companyDMBindingsPath = envOrFn("SLACK_COMPANY_DM_BINDINGS_PATH", defaultCompanyDMBindingsPath)
+	cfg.companyAgentAppsPath = envOrFn("SLACK_COMPANY_AGENT_APPS_PATH", defaultCompanyAgentAppsPath)
+	cfg.companyIngressDir = envOrFn("SLACK_COMPANY_INGRESS_DIR", defaultCompanyIngressDir)
+	cfg.companySelfBotUserID = getenv("SLACK_SWITCHBOARD_BOT_USER_ID")
+	if raw := getenv("SLACK_COMPANY_CITY_APIS"); raw != "" {
+		cfg.companyCityAPIs = make(map[string]string)
+		for _, pair := range strings.Split(raw, ",") {
+			pair = strings.TrimSpace(pair)
+			if pair == "" {
+				continue
+			}
+			name, base, ok := strings.Cut(pair, "=")
+			name, base = strings.TrimSpace(name), strings.TrimRight(strings.TrimSpace(base), "/")
+			if !ok || name == "" || base == "" || strings.ContainsAny(name, "/?#% \t") ||
+				(!strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://")) {
+				return cfg, fmt.Errorf("SLACK_COMPANY_CITY_APIS: invalid entry %q (want city=http(s)://host:port)", pair)
+			}
+			cfg.companyCityAPIs[name] = base
+		}
+	}
+	// Visible-ack gate: off unless the env var is a non-empty value other
+	// than "0" (the same truthiness the rest of the company config uses).
+	if v := strings.TrimSpace(getenv("SLACK_COMPANY_VISIBLE_ACKS")); v != "" && v != "0" {
+		cfg.companyVisibleAcks = true
+	}
+	// Advisory session-existence guard (Phase 4): same truthiness convention.
+	// Default off — the guard must never reduce availability below flag-off.
+	if v := strings.TrimSpace(getenv("SLACK_COMPANY_VERIFY_SESSIONS")); v != "" && v != "0" {
+		cfg.companyVerifySessions = true
+	}
+
+	// Phase 2 shared-state directories. Same resolution precedence as the
+	// registries above, with the Python leaf names (secrets/,
+	// company-delegation-intents/, company-delegations/, company-current-turn/,
+	// locks/). These MUST match scripts/slack_company_outbound.py file for
+	// file.
+	cfg.companySecretsDir = envOrFn("SLACK_COMPANY_SECRETS_DIR", companyStateDirDefault(cfg.cityPath, "secrets"))
+	cfg.companyIntentsDir = envOrFn("SLACK_COMPANY_INTENTS_DIR", companyStateDirDefault(cfg.cityPath, "company-delegation-intents"))
+	cfg.companyDelegationsDir = envOrFn("SLACK_COMPANY_DELEGATIONS_DIR", companyStateDirDefault(cfg.cityPath, "company-delegations"))
+	cfg.companyTurnsDir = envOrFn("SLACK_COMPANY_TURNS_DIR", companyStateDirDefault(cfg.cityPath, "company-current-turn"))
+	cfg.companyLocksDir = envOrFn("SLACK_COMPANY_LOCKS_DIR", companyStateDirDefault(cfg.cityPath, "locks"))
 
 	// Retention controls. Defaults: keep inbound files for 7 days,
 	// sweep every hour. Setting either to "0" disables the janitor.
@@ -862,31 +1018,46 @@ type slackEventEnvelope struct {
 	Challenge string          `json:"challenge,omitempty"`
 	TeamID    string          `json:"team_id,omitempty"`
 	APIAppID  string          `json:"api_app_id,omitempty"`
+	EventID   string          `json:"event_id,omitempty"`
 	Event     json.RawMessage `json:"event,omitempty"`
 }
 
 // slackFile is a subset of Slack's file object, just the fields we need
-// to download the bytes and pass useful metadata up to gc.
+// to download the bytes and pass useful metadata up to gc. Filetype, Size,
+// and URLPrivateDownload feed the company file-hydration path (snippet
+// content inlined into the frozen reminder); the download URL is preferred
+// over url_private for content fetches because Slack marks it with the
+// Content-Disposition that yields the raw bytes rather than an HTML wrapper.
 type slackFile struct {
-	ID         string `json:"id"`
-	Name       string `json:"name,omitempty"`
-	Title      string `json:"title,omitempty"`
-	URLPrivate string `json:"url_private,omitempty"`
-	MIMEType   string `json:"mimetype,omitempty"`
+	ID                 string `json:"id"`
+	Name               string `json:"name,omitempty"`
+	Title              string `json:"title,omitempty"`
+	URLPrivate         string `json:"url_private,omitempty"`
+	URLPrivateDownload string `json:"url_private_download,omitempty"`
+	MIMEType           string `json:"mimetype,omitempty"`
+	Filetype           string `json:"filetype,omitempty"`
+	Size               int    `json:"size,omitempty"`
 }
 
 type slackMessageEvent struct {
-	Type        string      `json:"type"`
-	Subtype     string      `json:"subtype,omitempty"`
-	User        string      `json:"user,omitempty"`
-	BotID       string      `json:"bot_id,omitempty"`
-	Text        string      `json:"text,omitempty"`
-	Channel     string      `json:"channel,omitempty"`
-	TS          string      `json:"ts,omitempty"`
-	ThreadTS    string      `json:"thread_ts,omitempty"`
-	EventTS     string      `json:"event_ts,omitempty"`
-	ChannelType string      `json:"channel_type,omitempty"`
-	Files       []slackFile `json:"files,omitempty"`
+	Type        string          `json:"type"`
+	Subtype     string          `json:"subtype,omitempty"`
+	User        string          `json:"user,omitempty"`
+	BotID       string          `json:"bot_id,omitempty"`
+	Text        string          `json:"text,omitempty"`
+	Channel     string          `json:"channel,omitempty"`
+	TS          string          `json:"ts,omitempty"`
+	ThreadTS    string          `json:"thread_ts,omitempty"`
+	EventTS     string          `json:"event_ts,omitempty"`
+	ChannelType string          `json:"channel_type,omitempty"`
+	Files       []slackFile     `json:"files,omitempty"`
+	Blocks      json.RawMessage `json:"blocks,omitempty"`
+	// AppID / BotProfile corroborate a bot author's bots.info resolution
+	// (Phase 2c); Metadata carries delegation / result correlation
+	// breadcrumbs on company posts.
+	AppID      string          `json:"app_id,omitempty"`
+	BotProfile json.RawMessage `json:"bot_profile,omitempty"`
+	Metadata   json.RawMessage `json:"metadata,omitempty"`
 }
 
 func main() {
@@ -1009,6 +1180,40 @@ func main() {
 	// win at runtime — this is purely observability.
 	logCrossStoreOverlapWarnings(channelMapReg, rigMapReg)
 
+	// Company-rooms (Slack company-rooms Phase 1) wiring. The two CLI-
+	// written registries load with the never-fatal contract (a corrupt or
+	// invalid file installs a nil snapshot and disables company routing
+	// while legacy traffic keeps flowing). The durable ingress store is a
+	// hard prerequisite for admission, but its construction failure is NOT
+	// a legacy fallthrough: the gateway is wired even when the store cannot
+	// be created, and runs degraded (barrier stays closed, company-room
+	// admissible events get 503 without x-slack-no-retry, /healthz reports
+	// the store error, startRecovery retries construction). companyGW must
+	// be set on cfg BEFORE handleSlackEvents closes over the cfg value below.
+	companyDirStore := &companyDirectoryStore{}
+	if err := companyDirStore.Load(cfg.companyDirectoryPath); err != nil {
+		log.Printf("company directory: initial load surfaced %v (routing disabled until a valid file is imported)", err)
+	}
+	companyBindStore := &companyBindingsStore{}
+	if err := companyBindStore.Load(cfg.companyBindingsPath, companyDirStore.Snapshot()); err != nil {
+		log.Printf("company bindings: initial load surfaced %v", err)
+	}
+	receipts, rerr := NewIngressReceiptStore(cfg.companyIngressDir)
+	if rerr != nil {
+		log.Printf("WARN: company ingress store %q: %v — gateway starting DEGRADED (company events 503, never legacy; construction retried)",
+			cfg.companyIngressDir, rerr)
+	}
+	companyGW := newCompanyGateway(cfg, companyDirStore, companyBindStore, receipts)
+	if rerr != nil {
+		companyGW.setStoreError(rerr)
+	}
+	cfg.companyGateway = companyGW
+	companyHealthStatus.Store(companyGW)
+	log.Printf("company gateway: directory=%s bindings=%s dm_bindings=%s agent_apps=%s ingress=%s self_bot=%q dir_loaded=%v bindings_loaded=%v dm_bindings_loaded=%v registered_agent_apps=%d verify_sessions=%v store_ready=%v",
+		cfg.companyDirectoryPath, cfg.companyBindingsPath, cfg.companyDMBindingsPath, cfg.companyAgentAppsPath, cfg.companyIngressDir, cfg.companySelfBotUserID,
+		companyDirStore.Snapshot() != nil, companyBindStore.Snapshot() != nil,
+		companyGW.dmBindStore.Snapshot() != nil, companyGW.agentApps.Snapshot().Len(), cfg.companyVerifySessions, receipts != nil)
+
 	// Public mux: only /slack/events + /slack/interactions
 	// (HMAC-verified) and /healthz. Bound to 0.0.0.0 by default so
 	// Tailscale Funnel can reach it.
@@ -1016,10 +1221,7 @@ func main() {
 	publicMux.HandleFunc("/slack/events", handleSlackEvents(cfg, aliasReg, threadReg, roomLaunchReg, subteamAliases, threadHandleSticky))
 	publicMux.HandleFunc("/slack/interactions", handleSlackInteractions(cfg, channelMapReg, rigMapReg))
 	registerOAuthHandlers(publicMux, cfg, appsReg)
-	publicMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
-	})
+	publicMux.HandleFunc("/healthz", handleHealthz)
 	publicMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
@@ -1035,10 +1237,16 @@ func main() {
 	internalMux.HandleFunc("DELETE /identity", handleIdentityDelete(identityReg))
 	internalMux.HandleFunc("POST /handle-alias", handleHandleAlias(aliasReg))
 	internalMux.HandleFunc("DELETE /handle-alias", handleHandleAliasDelete(aliasReg))
-	internalMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
-	})
+	// Company-rooms operator surface: the receipt listing + redrive endpoints
+	// (Phase 3b) backing the `gc slack company-status` / `company-redrive` verbs,
+	// plus the Phase 5 body-redaction hook (`gc slack company-redact`).
+	// Registered only when the company gateway is wired.
+	if cfg.companyGateway != nil {
+		internalMux.HandleFunc("/internal/company/receipts", cfg.companyGateway.handleCompanyReceipts)
+		internalMux.HandleFunc("/internal/company/redrive", cfg.companyGateway.handleCompanyRedrive)
+		internalMux.HandleFunc("/internal/company/redact", cfg.companyGateway.handleCompanyRedact)
+	}
+	internalMux.HandleFunc("/healthz", handleHealthz)
 
 	publicSrv := &http.Server{
 		Addr:              cfg.publicListen,
@@ -1065,6 +1273,7 @@ func main() {
 	janitorCtx, janitorCancel := context.WithCancel(context.Background())
 	defer janitorCancel()
 	go runInboundFileJanitor(janitorCtx, cfg)
+	go runDispatchDropSummary(janitorCtx, dispatchDropSummaryInterval, cfg.dispatchConcurrency)
 
 	// Thread-binding teardown subscriber (cby.5.4): listens to gc's
 	// city-scoped event stream for terminal session lifecycle events
@@ -1076,6 +1285,13 @@ func main() {
 		gcAPIBase: cfg.gcAPIBase,
 		cityName:  cfg.cityName,
 	}, threadReg, aliasReg)
+
+	// Company-rooms startup recovery barrier + periodic sweep. Until the
+	// barrier opens, company-admissible events receive 503 (retryable);
+	// legacy routes, /healthz, interactions, and the internal listener
+	// serve immediately (they never consulted the gateway). The recovery
+	// pass and sweep are no-ops when the gateway is nil.
+	companyGW.startRecovery(janitorCtx)
 
 	errCh := make(chan error, 2)
 	go func() {
@@ -1111,6 +1327,11 @@ func main() {
 	defer signal.Stop(hupCh)
 	go runReloadLoop(reloadStop, hupCh, func() {
 		logReloadOutcome(appsReg, channelMapReg, rigMapReg, roomLaunchReg, subteamAliases, userAliases)
+		// Company stores reload on the same SIGHUP but OUTSIDE the atomic
+		// six-registry set: a stale/invalid company file retains its own
+		// last-known-good snapshot (handled inside StageReload) and never
+		// blocks the six above, which have already committed.
+		companyGW.reloadOnSIGHUP()
 	})
 
 	stop := make(chan os.Signal, 1)
@@ -1550,18 +1771,26 @@ func handlePublishFile(cfg config, reg *identityRegistry) http.HandlerFunc {
 // The returned path is the cleaned absolute form, suitable for passing
 // to os.Stat / os.ReadFile.
 func confineFileUploadPath(root, path string) (string, error) {
+	_, pathAbs, _, err := confinedUploadPath(root, path)
+	return pathAbs, err
+}
+
+// confinedUploadPath is confineFileUploadPath's full-detail form: it
+// additionally returns the canonical root and the root-relative path,
+// which openBeneath needs for its component walk.
+func confinedUploadPath(root, path string) (rootAbs, pathAbs, rel string, err error) {
 	if root == "" {
-		return "", errors.New("FILE_UPLOAD_ROOT is empty")
+		return "", "", "", errors.New("FILE_UPLOAD_ROOT is empty")
 	}
 	if !filepath.IsAbs(root) {
-		return "", fmt.Errorf("FILE_UPLOAD_ROOT %q is not absolute", root)
+		return "", "", "", fmt.Errorf("FILE_UPLOAD_ROOT %q is not absolute", root)
 	}
 	if strings.TrimSpace(path) == "" {
-		return "", errors.New("path is empty")
+		return "", "", "", errors.New("path is empty")
 	}
-	rootAbs, err := filepath.Abs(root)
+	rootAbs, err = filepath.Abs(root)
 	if err != nil {
-		return "", fmt.Errorf("resolving root: %w", err)
+		return "", "", "", fmt.Errorf("resolving root: %w", err)
 	}
 	rootAbs = filepath.Clean(rootAbs)
 	// Best-effort symlink resolution on the root: if the operator
@@ -1570,14 +1799,14 @@ func confineFileUploadPath(root, path string) (string, error) {
 	if resolved, err := filepath.EvalSymlinks(rootAbs); err == nil {
 		rootAbs = resolved
 	}
-	pathAbs, err := filepath.Abs(path)
+	pathAbs, err = filepath.Abs(path)
 	if err != nil {
-		return "", fmt.Errorf("resolving path: %w", err)
+		return "", "", "", fmt.Errorf("resolving path: %w", err)
 	}
 	pathAbs = filepath.Clean(pathAbs)
-	rel, err := filepath.Rel(rootAbs, pathAbs)
+	rel, err = filepath.Rel(rootAbs, pathAbs)
 	if err != nil {
-		return "", fmt.Errorf("computing relative path: %w", err)
+		return "", "", "", fmt.Errorf("computing relative path: %w", err)
 	}
 	// Reject the root itself: the helper's contract is "file inside
 	// root", and any caller that later treats the returned path as a
@@ -1585,31 +1814,28 @@ func confineFileUploadPath(root, path string) (string, error) {
 	// directory-typed paths. Anything starting with ".." has escaped.
 	// An absolute rel (Windows volume crossing) is also out of bounds.
 	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("path %q is outside root %q", pathAbs, rootAbs)
+		return "", "", "", fmt.Errorf("path %q is outside root %q", pathAbs, rootAbs)
 	}
-	return pathAbs, nil
+	return rootAbs, pathAbs, rel, nil
 }
 
 // readConfinedFile reads realPath after re-asserting that it lies under
-// root, then opens with O_NOFOLLOW so a symlink that appears at the
-// leaf inode in the TOCTOU window between the caller's EvalSymlinks
-// resolution and the read causes the open to fail with ELOOP rather
-// than silently disclosing an arbitrary host file (gc-cby.10).
+// root, then opens it with openBeneath's component-wise walk so neither
+// a leaf symlink nor a parent directory swapped for a symlink in the
+// TOCTOU window between the caller's EvalSymlinks resolution and the
+// read can redirect the open outside root (gc-cby.10; the parent-swap
+// residual race was gpk-1ta4).
 //
 // realPath should be the filepath.EvalSymlinks-resolved canonical path
 // the caller has already verified with confineFileUploadPath; the
 // internal re-check makes the safe path the only path so a future call
 // site cannot regress arbitrary-read safety by skipping confinement.
-//
-// O_NOFOLLOW is leaf-only — a parent-directory component being swapped
-// to a symlink mid-flight is still followed by the kernel. Closing
-// that residual race requires openat2(2) with RESOLVE_BENEATH
-// (Linux ≥5.6) and is tracked separately.
 func readConfinedFile(root, realPath string) ([]byte, error) {
-	if _, err := confineFileUploadPath(root, realPath); err != nil {
+	rootAbs, _, rel, err := confinedUploadPath(root, realPath)
+	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(realPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openBeneath(rootAbs, rel)
 	if err != nil {
 		return nil, err
 	}
@@ -1671,7 +1897,14 @@ func slackGetUploadURL(token, filename string, length int) (*slackGetUploadURLRe
 	}
 	var sr slackGetUploadURLResp
 	if err := json.Unmarshal(respBody, &sr); err != nil {
-		return nil, fmt.Errorf("decode slack: %w (body=%s)", err, string(respBody))
+		// Do not embed respBody: a truncated/partial response can still
+		// carry upload_url — pre-signed token included — and this error
+		// reaches both log.Printf and the HTTP receipt body upstream.
+		// Status, size, and the unmarshal error (which reports offsets,
+		// not content) are enough to diagnose a malformed response.
+		// gpk-la1y.
+		return nil, fmt.Errorf("decode slack getUploadURLExternal response (status %s, %d bytes): %w",
+			httpResp.Status, len(respBody), err)
 	}
 	return &sr, nil
 }
@@ -1690,6 +1923,13 @@ func slackGetUploadURL(token, filename string, length int) (*slackGetUploadURLRe
 // multipart-with-filename pattern as the canonical shape; raw PUT silently
 // degrades to a "ghost upload" the channel post step can't bind to.
 func slackPutFileBytes(uploadURL string, filename string, body []byte) error {
+	// uploadURL is a pre-signed, token-bearing URL (see doc above). Every
+	// error below reports safeURL — never the raw uploadURL — so its embedded
+	// auth never reaches log.Printf or the HTTP receipt at the publishFile
+	// handler's sink. This mirrors slackDownloadToFile's redaction; the two
+	// sibling upload steps (slackGetUploadURL, slackCompleteUpload) already
+	// redact, and this one must too. gpk-la1y.
+	safeURL := redactSlackURL(uploadURL)
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	part, err := mw.CreateFormFile("filename", filename)
@@ -1704,17 +1944,19 @@ func slackPutFileBytes(uploadURL string, filename string, body []byte) error {
 	}
 	req, err := http.NewRequest(http.MethodPost, uploadURL, &buf)
 	if err != nil {
-		return err
+		return redactTransportError("build upload request to", safeURL, err)
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return redactTransportError("upload POST to", safeURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("upload POST %s: %s — %s", uploadURL, resp.Status, string(respBody))
+		// respBody is untrusted origin content: sanitize control chars
+		// (log-line injection) and scrub any reflected URL/token. gpk-la1y.
+		return fmt.Errorf("upload POST %s: %s — %s", safeURL, resp.Status, sanitizeSlackErrorBody(respBody))
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
@@ -1744,7 +1986,12 @@ func slackCompleteUpload(token string, req slackCompleteUploadReq) (*slackComple
 	}
 	var sr slackCompleteUploadResp
 	if err := json.Unmarshal(respBody, &sr); err != nil {
-		return nil, fmt.Errorf("decode slack: %w (body=%s)", err, string(respBody))
+		// Do not embed respBody: completeUploadExternal responses carry
+		// full file objects (url_private, url_private_download) whose
+		// URLs can bear auth tokens, and this error reaches log.Printf
+		// and the HTTP receipt body upstream. gpk-la1y.
+		return nil, fmt.Errorf("decode slack completeUploadExternal response (status %s, %d bytes): %w",
+			httpResp.Status, len(respBody), err)
 	}
 	return &sr, nil
 }
@@ -1806,15 +2053,27 @@ func handleReact(cfg config) http.HandlerFunc {
 }
 
 func postReactionToSlack(token string, req slackReactionsAddReq) (*slackReactionsAddResp, error) {
+	return postReactionMethod(http.DefaultClient, token, "reactions.add", req)
+}
+
+// postReactionMethod is the single Slack reactions POST path, parameterized by
+// method ("reactions.add" | "reactions.remove") and HTTP client. handleReact
+// (add, DefaultClient) and the company visible-ack path (add/remove over the
+// gateway's timeout-bounded client) both route through here, so there is no
+// second reactions POST implementation.
+func postReactionMethod(client *http.Client, token, method string, req slackReactionsAddReq) (*slackReactionsAddResp, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
 	body, _ := json.Marshal(req)
-	httpReq, err := http.NewRequest(http.MethodPost, slackAPIBase+"/reactions.add", bytes.NewReader(body))
+	httpReq, err := http.NewRequest(http.MethodPost, slackAPIBase+"/"+method, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("Content-Type", "application/json; charset=utf-8")
 
-	httpResp, err := http.DefaultClient.Do(httpReq)
+	httpResp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
@@ -1831,6 +2090,17 @@ func postReactionToSlack(token string, req slackReactionsAddReq) (*slackReaction
 }
 
 func postToSlack(token string, req slackPostMessageReq) (*slackPostMessageResp, error) {
+	return postMessageWithClient(http.DefaultClient, token, req)
+}
+
+// postMessageWithClient is the single Slack chat.postMessage path, parameterized
+// by HTTP client. postToSlack (DefaultClient) and the company visible-ack failure
+// reply (the gateway's timeout-bounded client) both route through here, so there
+// is no second chat.postMessage implementation.
+func postMessageWithClient(client *http.Client, token string, req slackPostMessageReq) (*slackPostMessageResp, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
 	body, _ := json.Marshal(req)
 	httpReq, err := http.NewRequest(http.MethodPost, slackAPIBase+"/chat.postMessage", bytes.NewReader(body))
 	if err != nil {
@@ -1839,7 +2109,7 @@ func postToSlack(token string, req slackPostMessageReq) (*slackPostMessageResp, 
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("Content-Type", "application/json; charset=utf-8")
 
-	httpResp, err := http.DefaultClient.Do(httpReq)
+	httpResp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
@@ -1866,19 +2136,23 @@ func handleSlackEvents(cfg config, aliasReg *handleAliasRegistry, threadReg *thr
 			http.Error(w, "read body", http.StatusBadRequest)
 			return
 		}
-		// Resolve the candidate signing secrets BEFORE HMAC. Body is
-		// unsigned bytes by definition until verified — that's the
-		// whole point of the signature — so we parse only the small
-		// team_id field to choose which key(s) to trial-verify with.
-		// Standard Slack multi-tenant pattern. No team_id in body
-		// (e.g. malformed) falls through to env fallback inside
-		// lookupSigningSecrets.
-		teamID := parseTeamIDFromEventsBody(body)
-		secrets := lookupSigningSecrets(cfg.appsRegistry, cfg.slackSigningKey, teamID)
+		// Resolve the signing secret(s) BEFORE HMAC. Body is unsigned bytes by
+		// definition until verified, so we parse only the small type +
+		// api_app_id + team_id head to pick the Phase 4 verification path (env
+		// secret for the switchboard/legacy, the app's OWN secret for a
+		// registered agent app, trial for the url_verification handshake).
+		head := parseEventHead(body)
 		ts := r.Header.Get("X-Slack-Request-Timestamp")
 		sig := r.Header.Get("X-Slack-Signature")
-		if !verifySlackSignatureMulti(secrets, ts, body, sig) {
-			log.Printf("slack signature verify FAILED team_id=%q candidates=%d", clipTeamIDForLog(teamID), len(secrets))
+		// Resolve the agent-apps registration snapshot ONCE per request so the
+		// HMAC decision and the DM admission gate agree even if a SIGHUP swaps
+		// the registry between them (m7): a mid-request register/deregister can
+		// no longer route an event verified as an agent-app DM into the legacy
+		// dispatcher, nor admit a legacy-trial-verified event as an owner DM.
+		agentApps := cfg.companyGateway.agentAppsSnapshot()
+		if !verifyInboundEvent(cfg, agentApps, head, body, ts, sig) {
+			log.Printf("slack signature verify FAILED type=%q api_app_id=%q team_id=%q",
+				clipTeamIDForLog(head.Type), clipTeamIDForLog(head.APIAppID), clipTeamIDForLog(head.TeamID))
 			http.Error(w, "invalid signature", http.StatusUnauthorized)
 			return
 		}
@@ -1893,6 +2167,18 @@ func handleSlackEvents(cfg config, aliasReg *handleAliasRegistry, threadReg *thr
 		if env.Type == "url_verification" && env.Challenge != "" {
 			w.Header().Set("Content-Type", "text/plain")
 			_, _ = w.Write([]byte(env.Challenge))
+			return
+		}
+
+		// Company-rooms durable admission (Slack company-rooms Phase 1d).
+		// When the event targets an imported company room, the gateway
+		// owns the HTTP response (200 on admit/duplicate/non-admissible,
+		// 503 without x-slack-no-retry on store failure or a closed
+		// startup barrier) and delivery proceeds asynchronously. Every
+		// other event — no gateway, no directory, non-company channel,
+		// non-message type — falls through to the legacy path below
+		// byte-for-byte.
+		if cfg.companyGateway.tryHandleEvent(w, r, env, agentApps) {
 			return
 		}
 
@@ -1930,6 +2216,105 @@ func parseTeamIDFromEventsBody(body []byte) string {
 		return ""
 	}
 	return head.TeamID
+}
+
+// eventHead is the minimal pre-HMAC view of a /slack/events body: the fields
+// that select the Phase 4 verification path. Parsed from unsigned bytes, so it
+// carries no trust — it only routes the request to the right secret.
+type eventHead struct {
+	Type     string `json:"type"`
+	APIAppID string `json:"api_app_id"`
+	TeamID   string `json:"team_id"`
+}
+
+// parseEventHead extracts the type / api_app_id / team_id head. Returns a zero
+// value on any decode failure; every downstream branch fails closed on the
+// zero value (no api_app_id match, empty candidate list). Body is already
+// capped at 1 MiB upstream.
+func parseEventHead(body []byte) eventHead {
+	var h eventHead
+	_ = json.Unmarshal(body, &h)
+	return h
+}
+
+// verifyInboundEvent implements the Phase 4 verification order (event POSTs).
+// Fail-closed at every step; the switchboard/legacy path stays byte-for-byte
+// the existing rooms behavior (lookupSigningSecrets). agentApps is the caller's
+// once-per-request registration snapshot (m7): the SAME value must be handed to
+// tryHandleEvent so verification and admission never disagree across a SIGHUP.
+//
+//  1. url_verification: no api_app_id in the handshake — trial-HMAC across the
+//     env secret (+ any apps.json secret) and ALL registered agent secrets;
+//     echo on any match. Side-effect-free, so a trial is acceptable here and
+//     ONLY here.
+//  2. event_callback, api_app_id == SLACK_APP_ID (the switchboard's own app):
+//     verify against the env signing secret ONLY (the rooms path, unchanged).
+//     This branch is authoritative and takes precedence over any registered
+//     agent record that happens to carry the same api_app_id — the switchboard
+//     identity is pinned to the env secret, never a file-registered one. Empty
+//     SLACK_APP_ID disables the pin and lets the switchboard fall to rule 4.
+//  3. event_callback, api_app_id == a registered agent app: verify against
+//     exactly that record's secret. A mismatch — including a signature valid
+//     under a DIFFERENT registered app's secret — is a strict-bind reject
+//     (401, counter company_dm_sig_reject). The bind check is authoritative;
+//     no fallback (rule 12 spoof defense).
+//  4. otherwise (an unknown api_app_id): the legacy lookupSigningSecrets path,
+//     UNCHANGED — except a legacy trial that matches a secret which is ALSO a
+//     registered agent secret is rejected, because registration opts an app
+//     into strict binding permanently.
+func verifyInboundEvent(cfg config, agentApps *AgentApps, head eventHead, body []byte, ts, sig string) bool {
+	if head.Type == "url_verification" {
+		candidates := lookupSigningSecrets(cfg.appsRegistry, cfg.slackSigningKey, head.TeamID)
+		candidates = append(candidates, agentApps.SigningSecrets()...)
+		return verifySlackSignatureMulti(candidates, ts, body, sig)
+	}
+	// Rule 2: the switchboard's own api_app_id pins to the env secret only. It
+	// is checked BEFORE the registered-agent lookup so a registered record
+	// sharing SLACK_APP_ID can never shadow the env-secret path (spec §Verify
+	// order rule 2/3 precedence). A mismatch here is a plain 401 (the rooms
+	// path), not a company_dm_sig_reject.
+	if head.Type == "event_callback" && cfg.slackAppID != "" && head.APIAppID == cfg.slackAppID {
+		return verifySlackSignature(cfg.slackSigningKey, ts, body, sig)
+	}
+	if rec, ok := agentApps.Get(head.APIAppID); ok {
+		if verifySlackSignature(rec.SigningSecret, ts, body, sig) {
+			return true
+		}
+		// Strict binding: an event claiming a registered app must verify under
+		// that app's own secret or be rejected, even if it verifies under some
+		// other registered app's secret (the cross-app spoof).
+		cfg.companyGateway.recordDMSigReject()
+		return false
+	}
+	// The legacy trial set is the env/apps.json candidates PLUS every registered
+	// agent secret, so a match on a registered secret is DETECTED (not silently
+	// unmatched) and explicitly rejected: that app opted into strict binding via
+	// registration, so it may never be admitted through the unknown-api_app_id
+	// carve-out. A match on a non-registered legacy candidate is accepted.
+	candidates := lookupSigningSecrets(cfg.appsRegistry, cfg.slackSigningKey, head.TeamID)
+	candidates = append(candidates, agentApps.SigningSecrets()...)
+	matched, ok := firstMatchingSecret(candidates, ts, body, sig)
+	if !ok {
+		return false
+	}
+	if agentApps.isRegisteredSecret(matched) {
+		cfg.companyGateway.recordDMSigReject()
+		return false
+	}
+	return true
+}
+
+// firstMatchingSecret trials each candidate secret against the HMAC and
+// returns the first that verifies (and true). Fail-closed semantics per
+// verifySlackSignature. Used by the legacy verification path so the caller can
+// inspect WHICH secret matched (the strict-bind rejection above).
+func firstMatchingSecret(secrets []string, ts string, body []byte, sig string) (string, bool) {
+	for _, s := range secrets {
+		if verifySlackSignature(s, ts, body, sig) {
+			return s, true
+		}
+	}
+	return "", false
 }
 
 // verifySlackSignatureMulti trials each candidate secret against the
@@ -2204,8 +2589,10 @@ func processSlackEvent(cfg config, aliasReg *handleAliasRegistry, threadReg *thr
 	// the eye, because most channel messages aren't intentionally
 	// directed at an agent. Fires once per inbound (the alias-dispatch
 	// fanout below targets the same Slack TS, so a duplicate react would
-	// be a Slack no-op). Best-effort: errors are logged and don't block
-	// the dispatch path.
+	// be a Slack no-op). If alias dispatch later fails, reactAliasDispatchFailure
+	// posts ⚠️ on the same TS — that is semantically distinct (transport-layer
+	// ack vs. delivery failure) and not a duplicate. Best-effort: errors are
+	// logged and don't block the dispatch path.
 	if target != "" && cfg.slackBotToken != "" {
 		go func(channel, ts string) {
 			_, err := postReactionToSlack(cfg.slackBotToken, slackReactionsAddReq{
@@ -2245,7 +2632,10 @@ func processSlackEvent(cfg config, aliasReg *handleAliasRegistry, threadReg *thr
 			go func() {
 				defer dispatchInflightWG.Done()
 				defer release()
-				dispatchToAliasedSession(cfg, aliasedSessionID, inbound, target)
+				if !dispatchToAliasedSession(cfg, aliasedSessionID, inbound, target) {
+					reactAliasDispatchFailure(cfg.slackBotToken,
+						inbound.Conversation.ConversationID, inbound.ProviderMessageID)
+				}
 			}()
 		}
 	}
@@ -2408,14 +2798,17 @@ func safeFilename(name string) string {
 func isSlackFileURL(rawURL string) (bool, error) {
 	u, err := url.ParseRequestURI(rawURL)
 	if err != nil {
-		return false, fmt.Errorf("parse url_private: %w", err)
+		// This error propagates verbatim into slackDownloadToFile's
+		// returned error and adapter logs — see unwrapURLError for why
+		// it cannot be wrapped raw. gpk-la1y.
+		return false, fmt.Errorf("parse url_private %q: %w", redactSlackURL(rawURL), unwrapURLError(err))
 	}
 	if !u.IsAbs() {
 		// ParseRequestURI accepts absolute paths (e.g. "/files-pri/...") and
 		// protocol-relative URLs ("//attacker.com/...") without an error;
 		// IsAbs() returns false for both, so they are caught here. A forged
 		// url_private must be a full absolute URL, never a path.
-		return false, fmt.Errorf("url_private not absolute: %q", rawURL)
+		return false, fmt.Errorf("url_private not absolute: %q", redactSlackURL(rawURL))
 	}
 	if u.Scheme != "https" {
 		return false, nil
@@ -2435,6 +2828,149 @@ func isSlackFileURL(rawURL string) (bool, error) {
 		return true, nil
 	}
 	return false, nil
+}
+
+// redactSlackURL returns a form of raw safe to embed in error messages
+// and logs: the query string AND fragment are dropped and userinfo is
+// removed entirely, while host/path are preserved so log scanners can
+// still correlate on the CDN link. Slack CDN url_private links and
+// pre-signed upload URLs carry auth tokens in the query (t=xoxe-...,
+// token=...) and sometimes the fragment, and a forged url_private may
+// carry attacker-chosen credentials in user[:password]@host form.
+// url.URL.Redacted() alone is NOT sufficient: it masks the userinfo
+// password only (leaving a bare username or the query/fragment intact),
+// so we clear those fields explicitly.
+//
+// Two input shapes bypass the structural field clears: input url.Parse
+// rejects outright (handled by the '?'/'#' cut + stripURLUserinfo
+// fallback), and an "opaque" URI (scheme:opaque with no "//"), where the
+// credential-bearing text lives in u.Opaque untouched by the clears.
+// url.Parse accepts the opaque form without error, so we detect it and
+// route it through the same textual fallback. Finally, a slackTokenRe
+// backstop guarantees no Slack token shape survives in ANY form
+// (hierarchical, opaque, or backslash-delimited). gpk-la1y.
+func redactSlackURL(raw string) string {
+	var safe string
+	if u, err := url.Parse(raw); err == nil && u.Opaque == "" {
+		u.RawQuery = ""
+		u.Fragment = ""
+		u.User = nil
+		safe = u.String()
+	} else {
+		safe, _, _ = strings.Cut(raw, "?")
+		safe, _, _ = strings.Cut(safe, "#")
+		safe = stripURLUserinfo(safe)
+	}
+	return slackTokenRe.ReplaceAllString(safe, "[redacted-token]")
+}
+
+// stripURLUserinfo removes a "user[:pass]@" prefix from the authority of
+// a URL-ish string that redactSlackURL could not clear structurally, so
+// forged credentials (or a token stuffed into userinfo) do not survive
+// its fallback. Only the authority between "://" and the next '/' is
+// considered, so an '@' in a later path segment is left alone. Inputs
+// lacking a "://" (e.g. an opaque scheme:host@... or backslash-delimited
+// form) have no authority we can locate textually; the slackTokenRe
+// backstop in redactSlackURL covers token-shaped credentials there. gpk-la1y.
+func stripURLUserinfo(s string) string {
+	i := strings.Index(s, "://")
+	if i < 0 {
+		return s
+	}
+	authStart := i + len("://")
+	rest := s[authStart:]
+	authority := rest
+	if end := strings.IndexByte(rest, '/'); end >= 0 {
+		authority = rest[:end]
+	}
+	at := strings.LastIndexByte(authority, '@')
+	if at < 0 {
+		return s
+	}
+	return s[:authStart] + authority[at+1:] + s[authStart+len(authority):]
+}
+
+// urlInTextRe matches an absolute URL embedded in free-form text,
+// bounded by whitespace, quotes, or angle brackets. It scrubs raw URLs
+// that appear inside error text we do not author — see scrubSlackSecrets.
+var urlInTextRe = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s"'<>]+`)
+
+// slackTokenRe matches Slack auth token shapes (xoxb-/xoxe-/xoxp-/xoxa-/
+// xoxr-/xoxs-/xoxd- and xapp- app tokens). It is the backstop for a token
+// that reaches error text WITHOUT travelling inside an absolute URL — a
+// token in a relative redirect Location (no scheme://, so urlInTextRe
+// misses it), or one reflected bare by a compromised-but-allowlisted
+// origin in a 4xx body. gpk-la1y.
+var slackTokenRe = regexp.MustCompile(`(xox[a-zA-Z]|xapp)-[A-Za-z0-9-]+`)
+
+// scrubSlackSecrets removes secrets that must never reach adapter logs or
+// HTTP receipts from free-form text: every embedded absolute URL is passed
+// through redactSlackURL (dropping token-bearing query, fragment, and
+// userinfo), and any bare Slack token shape that survives is replaced.
+// Both passes are required: net/http parses a redirect Location BEFORE
+// CheckRedirect runs and, on failure, interpolates the raw header into a
+// *url.Error's text — and that header may be relative, so the URL pass
+// alone would miss its token. gpk-la1y.
+func scrubSlackSecrets(s string) string {
+	s = urlInTextRe.ReplaceAllStringFunc(s, redactSlackURL)
+	s = slackTokenRe.ReplaceAllString(s, "[redacted-token]")
+	return s
+}
+
+// sanitizeSlackErrorBody makes an untrusted HTTP error-response body safe
+// to embed in an error that reaches log.Printf and an HTTP receipt: it
+// strips control characters (defeating log-line injection via embedded
+// CR/LF) and scrubs any URL or bare Slack token the origin reflected.
+// gpk-la1y.
+func sanitizeSlackErrorBody(b []byte) string {
+	cleaned := strings.Map(func(r rune) rune {
+		switch r {
+		case '\t', '\n', '\r':
+			return ' '
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, string(b))
+	return scrubSlackSecrets(cleaned)
+}
+
+// unwrapURLError returns the underlying cause of a *url.Error, or err
+// unchanged. A *url.Error's Error() text embeds the full request URL —
+// token-bearing query included — so wrapping one with %w leaks the URL
+// even when the surrounding message is redacted. Callers unwrap here and
+// re-wrap the bare cause against a redactSlackURL form. gpk-la1y.
+func unwrapURLError(err error) error {
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		return uerr.Err
+	}
+	return err
+}
+
+// redactTransportError re-wraps a net/http transport failure so no
+// token-bearing URL reaches adapter logs or HTTP receipts, reporting safeURL
+// (a redactSlackURL form) in place of the raw target. unwrapURLError strips
+// the *url.Error wrapper — whose Error() embeds the full request URL —
+// then scrubSlackSecrets removes any token the bare cause still carries.
+// The critical case: net/http parses a redirect Location BEFORE
+// CheckRedirect runs and, on a malformed header, returns a *url.Error whose
+// .Err text interpolates the raw, token-bearing Location verbatim (absolute
+// or relative). Safety rests on unwrapURLError reading only .Err (never
+// .URL, which net/http also sets to the raw redirect target) and on
+// scrubSlackSecrets as the redaction of last resort. The %w wrap is kept
+// when scrubbing is a no-op so errors.Is still matches plain transport
+// errors (e.g. connection-refused); it degrades to %s only on the
+// URL-bearing path. Shared by slackDownloadToFile (GET) and
+// slackPutFileBytes (upload POST). gpk-la1y.
+func redactTransportError(action, safeURL string, e error) error {
+	cause := unwrapURLError(e)
+	causeText := cause.Error()
+	if scrubbed := scrubSlackSecrets(causeText); scrubbed != causeText {
+		return fmt.Errorf("%s %s: %s", action, safeURL, scrubbed)
+	}
+	return fmt.Errorf("%s %s: %w", action, safeURL, cause)
 }
 
 // validateSlackFileURL is the SSRF gate applied to inbound url_private
@@ -2465,41 +3001,40 @@ var slackDialIPGuard = isPrivateOrLoopbackIP
 // validated against the Slack allowlist before any network I/O — see
 // isSlackFileURL for the threat model (gc-0fn).
 func slackDownloadToFile(token, urlPrivate, dest string) error {
+	// Every error below reports safeURL — never the raw urlPrivate — to
+	// keep its token-bearing query and any attacker-chosen userinfo out
+	// of adapter logs (see redactSlackURL for the threat model). The
+	// validateSlackFileURL branch is covered too: isSlackFileURL redacts
+	// its own error messages. gpk-la1y.
+	safeURL := redactSlackURL(urlPrivate)
+	// Transport failures below route through redactTransportError, which
+	// unwraps the *url.Error (whose Error() embeds the full token-bearing
+	// request URL, including a raw redirect Location) and reports safeURL.
+	// gpk-la1y.
 	ok, err := validateSlackFileURL(urlPrivate)
 	if err != nil {
 		return fmt.Errorf("validating url_private: %w", err)
 	}
 	if !ok {
-		// Redact userinfo before logging — a forged url_private may carry
-		// attacker-chosen credentials in user:password@host form, which
-		// would otherwise land in adapter logs verbatim. Redacted() also
-		// preserves the host/path for log-scanner matching.
-		safe := urlPrivate
-		if u, perr := url.Parse(urlPrivate); perr == nil {
-			safe = u.Redacted()
-		}
-		return fmt.Errorf("url_private host not in slack allowlist: %q", safe)
+		// safeURL preserves the host/path for log-scanner matching while
+		// masking attacker-chosen credentials and dropping the query.
+		return fmt.Errorf("url_private host not in slack allowlist: %q", safeURL)
 	}
 	req, err := http.NewRequest(http.MethodGet, urlPrivate, nil)
 	if err != nil {
-		return err
+		return redactTransportError("build download request to", safeURL, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := slackHTTPClientSingleton().Do(req)
 	if err != nil {
-		return err
+		return redactTransportError("GET", safeURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		// Redact url_private query string before logging — Slack CDN
-		// links can carry t=xoxe-... user tokens that must not reach
-		// the structured error reaching log.Printf upstream.
-		safeURL := urlPrivate
-		if u, perr := url.Parse(urlPrivate); perr == nil {
-			safeURL = u.Redacted()
-		}
-		return fmt.Errorf("GET %s: %s — %s", safeURL, resp.Status, string(respBody))
+		// respBody is untrusted origin content: sanitize control chars
+		// (log-line injection) and scrub any reflected URL/token. gpk-la1y.
+		return fmt.Errorf("GET %s: %s — %s", safeURL, resp.Status, sanitizeSlackErrorBody(respBody))
 	}
 	tmp := dest + ".tmp"
 	// 0o600: file content may be DM-private; rename below preserves this mode. gc-ywe.6.
@@ -2637,15 +3172,20 @@ func buildSlackHTTPClient() *http.Client {
 		Timeout:   5 * time.Minute,
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Redirect targets carry the same token-bearing query as the
+			// original url_private, and this error's text survives inside
+			// the *url.Error returned by Client.Do — redactTransport only
+			// sanitizes the outer URL, not this message. Redacted() alone
+			// keeps the query, so redact fully here. gpk-la1y.
 			if len(via) >= 10 {
-				return fmt.Errorf("redirect chain exceeded 10 hops at %s", req.URL.Redacted())
+				return fmt.Errorf("redirect chain exceeded 10 hops at %s", redactSlackURL(req.URL.String()))
 			}
 			ok, err := validateSlackFileURL(req.URL.String())
 			if err != nil {
 				return fmt.Errorf("validating redirect target: %w", err)
 			}
 			if !ok {
-				return fmt.Errorf("refusing redirect to non-slack host %q", req.URL.Redacted())
+				return fmt.Errorf("refusing redirect to non-slack host %q", redactSlackURL(req.URL.String()))
 			}
 			return nil
 		},
@@ -3310,20 +3850,47 @@ func handleHandleAliasDelete(reg *handleAliasRegistry) http.HandlerFunc {
 // receiving session needs to compose a reply: originating channel id (for
 // routing the reply back), message ts (for threading), and the inbound text.
 //
-// On error we log and continue — best-effort delivery; the originating
-// channel's transcript still records the inbound regardless.
-func dispatchToAliasedSession(cfg config, sessionID string, msg externalInboundMessage, handle string) {
+// Returns true on successful delivery, false on any error. The caller is
+// responsible for surface-visible failure signaling (e.g. a ⚠️ reaction).
+func dispatchToAliasedSession(cfg config, sessionID string, msg externalInboundMessage, handle string) bool {
 	// Every interpolated string is run through neutralizeMarkupBoundaries
 	// to prevent a Slack workspace member from forging </system-reminder>
 	// boundaries inside the dispatched body and injecting arbitrary
 	// system instructions into the receiving aliased session (cby.33,
 	// extends cby.17 sanitization to the alias dispatch path).
+	//
+	// Surface any downloaded attachments (file:// local paths) so the aliased
+	// session can Read them — vision works on local files. downloadSlackFiles
+	// already wrote each file to local disk and set URL="file://"+localpath
+	// and MIMEType; before this the dispatch interpolated only msg.Text and
+	// dropped the images entirely. Each field is neutralized like the text
+	// path (cby.33) so a forged </system-reminder> in a filename cannot break
+	// out of the reminder envelope. Empty string when there are no
+	// attachments, leaving the body byte-identical to the text-only form.
+	attachmentsBlock := ""
+	if len(msg.Attachments) > 0 {
+		var ab strings.Builder
+		fmt.Fprintf(&ab, "\nAttachments (%d) — saved to local disk; Read the file:// path to view:\n", len(msg.Attachments))
+		for i, att := range msg.Attachments {
+			name := filepath.Base(strings.TrimPrefix(att.URL, "file://"))
+			fmt.Fprintf(&ab, "  %d. %s (%s): %s\n",
+				i+1,
+				neutralizeMarkupBoundaries(name),
+				neutralizeMarkupBoundaries(att.MIMEType),
+				neutralizeMarkupBoundaries(att.URL))
+		}
+		attachmentsBlock = ab.String()
+	}
 	body := fmt.Sprintf(
 		"<system-reminder>\n"+
 			"Slack address-by-handle: @%s addressed you from channel %s (Slack ts %s) by user %s.\n"+
 			"\n"+
 			"Message text:\n"+
 			"%s\n"+
+			"%s"+
+			"\n"+
+			"React to this message with writing_hand to signal you are actively working on it:\n"+
+			"  gc slack react --emoji writing_hand\n"+
 			"\n"+
 			"To reply in that channel (threaded under their message), write your reply to a tmpfile and run:\n"+
 			"  gc slack publish-to-channel \\\n"+
@@ -3338,6 +3905,7 @@ func dispatchToAliasedSession(cfg config, sessionID string, msg externalInboundM
 		neutralizeMarkupBoundaries(msg.ProviderMessageID),
 		neutralizeMarkupBoundaries(msg.Actor.ID),
 		neutralizeMarkupBoundaries(msg.Text),
+		attachmentsBlock, // already per-field neutralized; pass raw
 		neutralizeMarkupBoundaries(msg.Conversation.ConversationID),
 		neutralizeMarkupBoundaries(msg.ProviderMessageID),
 	)
@@ -3352,22 +3920,44 @@ func dispatchToAliasedSession(cfg config, sessionID string, msg externalInboundM
 	req, err := http.NewRequest(http.MethodPost, target, bytes.NewReader(payload))
 	if err != nil {
 		log.Printf("alias dispatch: build request: %v", err)
-		return
+		return false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GC-Request", "gc-slack-adapter-alias")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Printf("alias dispatch: POST %s: %v", target, err)
-		return
+		return false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("alias dispatch: %s -> %s: %s", target, resp.Status, string(respBody))
-		return
+		return false
 	}
 	log.Printf("alias dispatch: handle=%s -> session=%s OK", handle, sessionID)
+	return true
+}
+
+// reactAliasDispatchFailure fires a best-effort ⚠️ reaction on the original
+// Slack message so a failed alias dispatch is visible in-channel rather than
+// silently dropped. Runs inside the dispatch goroutine (already async).
+func reactAliasDispatchFailure(token, channelID, ts string) {
+	if token == "" {
+		return
+	}
+	resp, err := postReactionToSlack(token, slackReactionsAddReq{
+		Channel:   channelID,
+		Name:      "warning",
+		Timestamp: ts,
+	})
+	if err != nil {
+		log.Printf("react warning (alias dispatch failure): chan=%s ts=%s: %v", channelID, ts, err)
+		return
+	}
+	if !resp.OK {
+		log.Printf("react warning (alias dispatch failure): chan=%s ts=%s: slack error=%s", channelID, ts, resp.Error)
+	}
 }
 
 // handleIdentity serves POST /identity. The caller (gc slack identity)

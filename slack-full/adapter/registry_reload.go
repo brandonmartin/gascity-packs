@@ -80,13 +80,12 @@ func scrubAppsRegistryError(err error) string {
 // If a future CLI command writes to any of those, extend this
 // orchestrator.
 //
-// gc-cby.9 follow-up: an in-process Set on appsRegistry (planned for the
-// OAuth callback path) racing a SIGHUP-driven Stage→Commit can briefly
-// roll the in-memory snapshot back to the pre-Set version (Set holds the
-// write lock, then Commit installs a snapshot taken before Set ran).
-// Stage's snapshot is whole-file, so the next reload converges. Document
-// the constraint where Set callers live, or sequence Set→file-write→
-// Set-mutex-hold-through-Commit if that's not acceptable.
+// gc-cby.9 race, defended: an in-process Set on appsRegistry (the OAuth
+// callback path) racing a SIGHUP-driven Stage→Commit would briefly roll
+// the in-memory snapshot back to the pre-Set version. The registry now
+// generation-stamps snapshots: Commit refuses one staged before a later
+// Set, and commitAppsWithRetry re-stages (bounded) so the reload picks
+// up the post-Set file instead of installing stale memory.
 func reloadAllRegistries(
 	apps *appsRegistry,
 	chans *channelMappingRegistry,
@@ -109,7 +108,7 @@ func reloadAllRegistries(
 
 	if apps != nil {
 		snap, err := apps.Stage()
-		stage(appsRegistryStageLabel, err, func() { apps.Commit(snap) })
+		stage(appsRegistryStageLabel, err, func() { commitAppsWithRetry(apps, snap) })
 	}
 	if chans != nil {
 		snap, err := chans.Stage()
@@ -139,6 +138,34 @@ func reloadAllRegistries(
 		c()
 	}
 	return nil
+}
+
+// commitAppsWithRetry installs the staged apps snapshot, re-staging when
+// an in-process Set (OAuth callback) landed after the Stage — installing
+// the stale snapshot would roll the in-memory view back to pre-Set
+// state. Bounded retries; the re-staged file already contains the Set's
+// write (Set persists before releasing the lock), so one retry normally
+// converges. On a re-stage parse error or retry exhaustion the live
+// state is preserved and the operator is told to re-send SIGHUP — the
+// other registries' commits have already run at this point, so failing
+// the whole reload would not restore atomicity.
+func commitAppsWithRetry(apps *appsRegistry, snap *appsSnapshot) {
+	for attempt := 0; ; attempt++ {
+		if apps.Commit(snap) {
+			return
+		}
+		if attempt >= 2 {
+			log.Printf("WARN: apps registry commit skipped after %d attempts: in-process updates kept racing the reload (live state preserved); re-send SIGHUP", attempt+1)
+			return
+		}
+		var err error
+		snap, err = apps.Stage()
+		if err != nil {
+			log.Printf("WARN: apps registry re-stage failed (live state preserved): %s",
+				scrubAppsRegistryError(fmt.Errorf("%s: %w", appsRegistryStageLabel, err)))
+			return
+		}
+	}
 }
 
 // runReloadLoop drains sigCh and invokes reload for each signal until

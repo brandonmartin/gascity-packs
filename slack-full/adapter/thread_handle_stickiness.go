@@ -36,8 +36,8 @@ import "sync"
 // future need calls for persistence, mirror the threadSessionRegistry
 // disk pattern.
 type threadHandleStickiness struct {
-	mu      sync.RWMutex
-	byKey   map[threadKey]string // (channel, thread_ts) -> handle
+	mu    sync.RWMutex
+	byKey map[threadKey]string // (channel, thread_ts) -> handle
 }
 
 // newThreadHandleStickiness returns an empty registry.

@@ -139,8 +139,8 @@ func TestSubteamAliasMapReloadOnUpdate(t *testing.T) {
 
 	// Operator edits the file: rename mayor → cos, add a new binding.
 	writeSubteamAliasFile(t, dir, map[string]string{
-		"S0123":  "cos",
-		"S_NEW":  "probe-pl",
+		"S0123": "cos",
+		"S_NEW": "probe-pl",
 	})
 	if err := m.Reload(); err != nil {
 		t.Fatalf("reload: %v", err)

@@ -20,14 +20,14 @@ import "strings"
 // Return values:
 //
 //   - handle:     non-empty for the labeled form (the `@`-stripped
-//                 label); empty for the unlabeled form.
+//     label); empty for the unlabeled form.
 //   - subteamID:  the Slack User Group ID (e.g. "S0123ABCD") in both
-//                 shapes. Non-empty whenever ok=true.
+//     shapes. Non-empty whenever ok=true.
 //   - remainder:  the text after the closing `>`, with one optional
-//                 colon and one leading whitespace byte trimmed
-//                 (mirroring parseHandlePrefix's separator rules).
+//     colon and one leading whitespace byte trimmed
+//     (mirroring parseHandlePrefix's separator rules).
 //   - ok:         true on any well-formed subteam token at the head;
-//                 false otherwise.
+//     false otherwise.
 //
 // Caller responsibilities:
 //

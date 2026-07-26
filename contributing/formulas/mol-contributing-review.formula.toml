@@ -1,0 +1,135 @@
+description = """
+Pre-push codebase audit — verify a local gastownhall/gascity change against
+the project's actual quality bar before pushing. The gc-orchestrated mode of
+the `review` skill: produces the same audit a contributor's coding agent runs
+by reading the skill, inside a transient worker session so a city operator can
+dispatch it on a branch.
+
+Scope note: unlike the maintainer-side review of an incoming GitHub PR, this
+audits *your own local branch's diff* against the upstream main you're
+targeting — the mechanical gates (`make build` / `make check` /
+`make check-docs`) plus the B1-B36 codebase audit. It is read-only.
+
+THIN WRAPPER. This formula is orchestration only. ALL audit standards — the
+mechanical gate set, the baseline-vs-regression classification, and the full
+B1-B36 checklist — live in the `review` skill, which is the single source of
+truth. The steps below say *apply the skill*; they do not restate it.
+
+The molecule root bead IS the control bead — run state is recorded in its
+notes via `gc bd update <root-id> --notes "<key>: <value>"`.
+
+## Contract
+
+1. Caller slings with optional `--var base=<ref>` (the baseline to diff
+   against; default: the upstream main the review skill resolves) and
+   `--var key=<id>` (output filename; default: the current branch name)
+2. Agent applies the `review` skill across three sequential steps
+3. Audit report written to `.gc/contributing/reviews/<key>.md`
+4. Root-bead notes record `verdict:` (block | request_changes | approve)
+5. Agent exits — no fixes are applied
+
+Apply fixes by re-iterating the development loop (or `mol-contributing-fine-tune`),
+not by extending this formula.
+
+## Failure Modes
+
+| Situation | Action |
+|-----------|--------|
+| Repo is not a git checkout | Record cwd, close bead |
+| On the default branch (no diff) | Note in report; verdict approve |
+| Diff is too large to fully audit | Note coverage, finish what fits |"""
+formula = "mol-contributing-review"
+version = 1
+
+[vars]
+[vars.base]
+description = "Baseline ref to diff against (e.g. origin/main or upstream/main). Default empty — the review skill resolves the upstream main it's targeting."
+default = ""
+
+[vars.key]
+description = "Stable identifier used as the output filename (e.g. \\\"issue-1234\\\"). Defaults to the current branch name."
+default = ""
+
+[[steps]]
+id = "intake"
+title = "Resolve the diff baseline and output path"
+description = """
+Confirm we are in a git repo and resolve where the report lands. Pure
+mechanism — the audit is the skill's job.
+
+```bash
+ROOT_ID=$(gc bd mol current --json | jq -r '.molecule_id')
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+    echo "Not in a git repository — cannot run the codebase check."
+    gc bd close "$ROOT_ID" --reason "not a git checkout"
+    exit 1
+}
+cd "$REPO_ROOT"
+BASE="{{base}}"
+KEY="{{key}}"
+if [ -z "$KEY" ]; then
+    KEY=$(git branch --show-current | tr '/' '_')
+    [ -z "$KEY" ] && KEY="HEAD"
+fi
+mkdir -p .gc/contributing/reviews
+REPORT_PATH=".gc/contributing/reviews/${KEY}.md"
+gc bd update "$ROOT_ID" --notes "base: ${BASE:-<skill-resolved upstream main>}
+key: $KEY
+report_path: $REPORT_PATH
+status: in_progress"
+```
+
+**Exit criteria:** In repo root, baseline + report path recorded.
+"""
+
+[[steps]]
+id = "review"
+title = "Apply the review skill and write the audit report"
+needs = ["intake"]
+description = """
+Apply the pack's own `review` skill — read
+`${GC_PACK_DIR}/skills/review/SKILL.md` and follow it end to end against this
+branch's diff (use `BASE` as the baseline if set; otherwise let the skill
+resolve the upstream main it targets). The skill is the single source of
+truth for Part A (mechanical gates + baseline-vs-regression classification)
+and Part B (the B1-B36 audit). Do not restate any rule here; run them from
+the skill, and write the skill's Part C report to `$REPORT_PATH`.
+
+Derive the verdict mechanically from the skill's findings — a real
+regression or an unwaived B-rule blocker is `block`/`request_changes`; an
+all-green or minors-only result is `approve`. Record it:
+
+```bash
+ROOT_ID=$(gc bd mol current --json | jq -r '.molecule_id')
+VERDICT="<block | request_changes | approve>"
+gc bd update "$ROOT_ID" --notes "verdict: $VERDICT
+status: report_written"
+```
+
+**Exit criteria:** Report written per the review skill, verdict recorded in bead notes.
+"""
+
+[[steps]]
+id = "finalize"
+title = "Surface the verdict and exit"
+needs = ["review"]
+description = """
+Display the report path and verdict on stdout for the caller, then close the
+root bead. No fixes are applied here.
+
+```bash
+ROOT_ID=$(gc bd mol current --json | jq -r '.molecule_id')
+NOTES=$(gc bd show "$ROOT_ID" --json | jq -r '.[0].notes // ""')
+REPORT_PATH=$(echo "$NOTES" | grep -m1 '^report_path:' | sed 's/^report_path: //')
+VERDICT=$(echo "$NOTES" | grep -m1 '^verdict:' | sed 's/^verdict: //')
+cat <<EOF
+[contributing-review] Codebase review complete
+[contributing-review]   Verdict: $VERDICT
+[contributing-review]   Path: $REPORT_PATH
+EOF
+gc bd update "$ROOT_ID" --notes "status: complete"
+gc bd close "$ROOT_ID" --reason "contributor codebase review written: $REPORT_PATH"
+```
+
+**Exit criteria:** Report path + verdict printed, root bead closed with status:complete.
+"""

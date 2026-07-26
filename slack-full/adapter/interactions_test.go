@@ -195,7 +195,7 @@ func TestSlackInteractionsSessionMappingHitDispatches(t *testing.T) {
 		accountID:       "T1",
 		cityName:        "test-city",
 		gcAPIBase:       gcStub.URL,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:     defaultTestDispatchSem,
 	}
 	mapReg := newTestChannelMappingRegistry(t)
 	now := time.Now().UTC()
@@ -464,7 +464,7 @@ func TestSlackInteractionsResolverChannelOverride(t *testing.T) {
 		accountID:       "T1",
 		cityName:        "test-city",
 		gcAPIBase:       gcStub.URL,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:     defaultTestDispatchSem,
 	}
 	chanReg := newTestChannelMappingRegistry(t)
 	rigReg := newTestRigMappingRegistry(t)
@@ -770,7 +770,7 @@ func TestSessionDispatchGoroutineDrainedBeforeNextTest(t *testing.T) {
 		accountID:       "T1",
 		cityName:        "test-city",
 		gcAPIBase:       stub.URL,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:     defaultTestDispatchSem,
 	}
 	chanReg := newTestChannelMappingRegistry(t)
 	now := time.Now().UTC()
@@ -1138,7 +1138,7 @@ func TestSlackInteractionsPerAppSignatureLookup(t *testing.T) {
 		accountID:    "T1",
 		cityName:     "test-city",
 		appsRegistry: appsReg,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:  defaultTestDispatchSem,
 	}
 	mapReg := newTestChannelMappingRegistry(t)
 
@@ -1184,7 +1184,7 @@ func TestSlackInteractionsRegistryMissUsesEnvFallback(t *testing.T) {
 		accountID:       "T1",
 		cityName:        "test-city",
 		appsRegistry:    appsReg,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:     defaultTestDispatchSem,
 	}
 	mapReg := newTestChannelMappingRegistry(t)
 
@@ -1323,7 +1323,7 @@ func TestSlackInteractionsBlockActionsSessionDispatch(t *testing.T) {
 		accountID:       "T1",
 		cityName:        "test-city",
 		gcAPIBase:       gcStub.URL,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:     defaultTestDispatchSem,
 	}
 	mapReg := newTestChannelMappingRegistry(t)
 	now := time.Now().UTC()
@@ -1393,7 +1393,7 @@ func TestSlackInteractionsBlockActionsContainerChannelFallback(t *testing.T) {
 		accountID:       "T1",
 		cityName:        "test-city",
 		gcAPIBase:       gcStub.URL,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:     defaultTestDispatchSem,
 	}
 	mapReg := newTestChannelMappingRegistry(t)
 	now := time.Now().UTC()
@@ -1562,7 +1562,7 @@ func TestSlackInteractionsBlockActionsEmptyActionsArray(t *testing.T) {
 		accountID:       "T1",
 		cityName:        "test-city",
 		gcAPIBase:       gcStub.URL,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:     defaultTestDispatchSem,
 	}
 	mapReg := newTestChannelMappingRegistry(t)
 	now := time.Now().UTC()
@@ -1618,7 +1618,7 @@ func TestSlackInteractionsBlockActionsMultipleActions(t *testing.T) {
 		accountID:       "T1",
 		cityName:        "test-city",
 		gcAPIBase:       gcStub.URL,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:     defaultTestDispatchSem,
 	}
 	mapReg := newTestChannelMappingRegistry(t)
 	now := time.Now().UTC()
@@ -1737,7 +1737,7 @@ func TestSlackInteractionsBlockActionsPerAppSecret(t *testing.T) {
 		accountID:    "T1",
 		cityName:     "test-city",
 		appsRegistry: appsReg,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:  defaultTestDispatchSem,
 	}
 	mapReg := newTestChannelMappingRegistry(t)
 
@@ -1782,7 +1782,7 @@ func TestSlackInteractionsViewSubmissionDispatch(t *testing.T) {
 		accountID:       "T1",
 		cityName:        "test-city",
 		gcAPIBase:       gcStub.URL,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:     defaultTestDispatchSem,
 	}
 	mapReg := newTestChannelMappingRegistry(t)
 
@@ -1979,7 +1979,7 @@ func TestSlackInteractionsBlockActionsNeutralizesSystemReminderInjection(t *test
 		accountID:       "T1",
 		cityName:        "test-city",
 		gcAPIBase:       gcStub.URL,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:     defaultTestDispatchSem,
 	}
 	mapReg := newTestChannelMappingRegistry(t)
 	now := time.Now().UTC()
@@ -2049,7 +2049,7 @@ func TestSlackInteractionsSlashCommandNeutralizesSystemReminderInjection(t *test
 		accountID:       "T1",
 		cityName:        "test-city",
 		gcAPIBase:       gcStub.URL,
-		dispatchSem: defaultTestDispatchSem,
+		dispatchSem:     defaultTestDispatchSem,
 	}
 	mapReg := newTestChannelMappingRegistry(t)
 	now := time.Now().UTC()

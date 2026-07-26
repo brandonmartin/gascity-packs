@@ -35,12 +35,14 @@ You are a slack-bound agent in this conversation.
 
 Reply protocol when you receive a `New message in shared conversation slack/...` reminder:
 
-  1. **FIRST**: react with eyes — BEFORE you compose anything, BEFORE you
+  1. **FIRST**: react with writing_hand — BEFORE you compose anything, BEFORE you
      read context, BEFORE you think about the reply.
-       gc slack react --emoji eyes
-     This is non-blocking and signals to the human that you've seen the
-     message. Replying first means the human waits in silence until your
-     full reply lands, even when you have an instant answer.
+       gc slack react --emoji writing_hand
+     This signals to the human that you are actively working on the message.
+     The adapter already placed 👀 on the message when it enqueued the inbound
+     (transport-level ack: "queued for the agent"). Your ✍️ is the agent-level
+     signal: "I am processing." Replying first means the human waits in silence
+     until your full reply lands, even when you have an instant answer.
 
   2. THEN compose your reply to a tmpfile.
 
@@ -56,9 +58,9 @@ when the inbound is a re-ping of an active thread. Even when it's a
 
 Use `gc slack publish-to-channel --conversation-id ... --no-thread` ONLY
 for explicit top-level status broadcasts initiated by you, never as a
-reply to an inbound. Eyes-react is for inbound-replies only — proactive
-posts (e.g. surfacing slung work completion) skip the react and just
-publish-to-thread.
+reply to an inbound. The writing_hand react is for inbound-replies only —
+proactive posts (e.g. surfacing slung work completion) skip the react and
+just publish-to-thread.
 </system-reminder>
 """
 

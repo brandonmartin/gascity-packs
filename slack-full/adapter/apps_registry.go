@@ -52,6 +52,14 @@ type appsRegistry struct {
 	mu       sync.RWMutex
 	byKey    map[string]appRecord
 	diskPath string
+	// gen counts in-process writes (Set). Stage stamps snapshots with
+	// the gen observed before the file read; Commit refuses snapshots
+	// staged before a later Set. This turns the gc-cby.9 constraint —
+	// a SIGHUP reload racing an OAuth-callback Set could briefly roll
+	// the in-memory view back to pre-Set state — from a documented
+	// hazard into a detected one (the reload re-stages; see
+	// commitAppsWithRetry in registry_reload.go).
+	gen uint64
 }
 
 // appsSnapshot is a parsed-but-not-yet-committed view of apps.json. A
@@ -60,6 +68,10 @@ type appsRegistry struct {
 // in-memory state. To clear, write an empty `{}` JSON document.
 type appsSnapshot struct {
 	byKey map[string]appRecord
+	// stagedAtGen is the registry generation observed before the file
+	// read backing this snapshot. Commit rejects the snapshot if the
+	// registry has advanced past it.
+	stagedAtGen uint64
 }
 
 func appsRegistryKey(workspaceID, appID string) string {
@@ -179,29 +191,51 @@ func (r *appsRegistry) load() error {
 // Stage parses the on-disk file into a snapshot ready for atomic Commit.
 // nil snapshot + nil error = file absent, preserve live state.
 func (r *appsRegistry) Stage() (*appsSnapshot, error) {
-	return parseAppsRegistry(r.diskPath)
+	// Capture gen BEFORE the file read: a Set landing between the two
+	// makes Commit report a false stale (the file read already saw the
+	// Set's write) — a harmless re-stage. The opposite order would
+	// miss real staleness.
+	r.mu.RLock()
+	gen := r.gen
+	r.mu.RUnlock()
+	snap, err := parseAppsRegistry(r.diskPath)
+	if snap != nil {
+		snap.stagedAtGen = gen
+	}
+	return snap, err
 }
 
 // Commit atomically swaps the in-memory snapshot under the write lock.
-// nil snapshot is a no-op so missing-file Stages preserve live state.
-func (r *appsRegistry) Commit(snap *appsSnapshot) {
+// nil snapshot is a no-op (missing-file Stages preserve live state) and
+// reports true. Returns false — without installing — when an in-process
+// Set advanced the registry past the snapshot's staging point; the
+// caller should re-Stage.
+func (r *appsRegistry) Commit(snap *appsSnapshot) bool {
 	if snap == nil {
-		return
+		return true
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.gen != snap.stagedAtGen {
+		return false
+	}
 	r.byKey = snap.byKey
+	return true
 }
 
 // Reload combines Stage and Commit; per-registry test convenience.
 // Production reload uses reloadAllRegistries for all-or-nothing semantics.
 func (r *appsRegistry) Reload() error {
-	snap, err := r.Stage()
-	if err != nil {
-		return err
+	for attempt := 0; attempt < 3; attempt++ {
+		snap, err := r.Stage()
+		if err != nil {
+			return err
+		}
+		if r.Commit(snap) {
+			return nil
+		}
 	}
-	r.Commit(snap)
-	return nil
+	return fmt.Errorf("apps registry: reload kept racing in-process updates; retry")
 }
 
 // Len returns the number of records currently loaded. Used by the
@@ -225,6 +259,10 @@ func (r *appsRegistry) Set(rec appRecord) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.byKey[appsRegistryKey(rec.WorkspaceID, rec.AppID)] = rec
+	// Bump gen before the save: the in-memory view changed either way,
+	// so any snapshot staged before this point is stale even if the
+	// file write below fails.
+	r.gen++
 	return r.saveLocked()
 }
 

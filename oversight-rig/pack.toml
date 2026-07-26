@@ -1,0 +1,87 @@
+# Oversight (rig variant) — drop-in pack for existing gastown-style cities.
+#
+# Disaggregates project-level work scoping out of the mayor. Adds one role
+# alongside your existing mayor, without touching it:
+#
+#   project-lead (rig scope, always-on, stamped per rig)
+#     • Bounded to ONE rig's beads. Reads its persona/focus/escalation
+#       triggers from <rig>/.gc/project-brief.md (each project owns its
+#       own brief, so scoping context stays local instead of piling onto
+#       the mayor).
+#     • Triages its rig every tick and dispatches ready, in-scope work in
+#       its own rig directly — it does not route every dispatch through
+#       the mayor.
+#     • Judges severity (info vs escalate) and writes structured rollup
+#       beads with explicit labels.
+#
+# The mayor stays unchanged and shrinks to what is genuinely cross-cutting:
+# planning work that spans rigs, and reacting to escalations.
+#
+# Why the outbound path has zero agent gates beyond project-lead:
+#   project-lead writes a rollup bead with label:severity:escalate.
+#   The escalate-rollups order uses a `condition` trigger that mechanically
+#   checks for undelivered escalate-severity rollup beads. When any exist,
+#   it runs deliver-rollup.sh which POSTs to extmsg and marks the bead
+#   delivered. No second agent decides "is this escalation-worthy" — that
+#   judgment was made once, by the agent with the right context, and the
+#   rollup bead IS the audit trail of that decision.
+#
+# Human replies route straight back to the bound project-lead: bind each
+# rig's project-lead session to that rig's channel with your slack pack, and
+# the human's reply arrives as an inbound notification on that session. (No
+# relay agent — the role that wrote the escalation receives the answer.)
+#
+# Topology in your existing city:
+#
+#   ┌──────────────────────────────────────────────────────────────────┐
+#   │ Your existing city                                               │
+#   │                                                                  │
+#   │  mayor (city, unchanged) ──── plans cross-cutting work           │
+#   │                                                                  │
+#   │  ┌── rig: foo ────────────┐  ┌── rig: bar ────────────┐  ...     │
+#   │  │ project-lead-foo (new) │  │ project-lead-bar (new) │          │
+#   │  │ • reads foo/.gc/       │  │ • reads bar/.gc/       │          │
+#   │  │   project-brief.md     │  │   project-brief.md     │          │
+#   │  │ • bounded to foo's     │  │ • bounded to bar's     │          │
+#   │  │   beads; dispatches    │  │   beads; dispatches    │          │
+#   │  │   its own ready work   │  │   its own ready work   │          │
+#   │  │ + your existing rig    │  │ + your existing rig    │          │
+#   │  │   agents (witness etc) │  │   agents               │          │
+#   │  └────────────────────────┘  └────────────────────────┘          │
+#   │                                                                  │
+#   │  ─── deterministic outbound ─────────────────────────────────    │
+#   │  project-lead writes rollup bead with severity:escalate          │
+#   │     ↓                                                            │
+#   │  escalate-rollups order (condition trigger, no agent)            │
+#   │     ↓                                                            │
+#   │  deliver-rollup.sh → POST /extmsg/outbound → mark delivered      │
+#   └──────────────────────────────────────────────────────────────────┘
+#
+# Requires an extmsg/slack adapter in the city for outbound delivery and
+# inbound replies — compose this pack with your slack pack (e.g. slack-full,
+# slack-channel, or slack-mini). This pack ships only the oversight role and
+# its escalation machinery, not a slack bridge.
+#
+# Optional: the project-lead's rig-scoped dispatch examples use convoy
+# formulas (mol-decompose, mol-pr-from-issue) supplied by a workflow/formula
+# pack (e.g. gastown). The oversight role works without them — it just won't
+# offer those particular dispatch shortcuts.
+#
+# To install in an existing city:
+#   1. Add the pack to city.toml (and stamp a project-lead per rig).
+#   2. For each rig you want under oversight, author its brief:
+#        cp agents/project-lead/project-brief.template.md \
+#           <rig-root>/.gc/project-brief.md
+#        # then edit the brief to fit the project
+#   3. Bind each rig's project-lead session to that rig's channel via your
+#      slack pack so escalations deliver and replies route back.
+#   4. gc supervisor reload — picks up the new agents and orders.
+
+[pack]
+name = "oversight-rig"
+schema = 2
+
+[[named_session]]
+template = "project-lead"
+scope = "rig"
+mode = "always"

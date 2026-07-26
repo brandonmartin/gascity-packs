@@ -1,0 +1,173 @@
+description = """
+Contributor triage workflow — scan open issues on gastownhall/gascity,
+classify them into the contributor-actionability tiers, and produce a
+ranked work-queue report. The gc-orchestrated mode of the `find-work`
+skill: same output a contributor's coding agent produces by reading the
+skill, but run inside a transient worker session so a city operator can dispatch it
+on demand.
+
+THIN WRAPPER. This formula is orchestration only — it resolves the root
+bead, verifies the repo, and records run state. ALL triage standards (the
+tier definitions, competing-PR detection, the maintainer-decision gates)
+live in the `find-work` skill, which is the single source of truth. The
+steps below say *apply the skill*; they do not restate it.
+
+The molecule root bead IS the control bead — run state is recorded in its
+notes via `gc bd update <root-id> --notes "<key>: <value>"`.
+
+## Contract
+
+1. Caller slings with optional `--var limit=<N>` (default 10) and
+   `--var category=<filter>` (default "all")
+2. Agent applies the `find-work` skill across three sequential steps
+3. Work-queue report written to `.gc/contributing/find-work/<timestamp>.md`
+4. Root-bead notes record `report_path:` + tier counts + recommended pick
+5. Agent exits — no implementation, labeling, or PR creation happens here
+
+## Failure Modes
+
+| Situation | Action |
+|-----------|--------|
+| Repo is not a git checkout | Record cwd, close bead |
+| Repo is not gastownhall/gascity | Record error, close bead |
+| `gh` not authenticated | Record error, close bead |
+| No open issues match category | Write empty-queue report, close bead with note |"""
+formula = "mol-contributing-find-work"
+version = 1
+
+[vars]
+[vars.limit]
+description = "Maximum number of candidate issues to evaluate per tier (default 10)"
+required = false
+
+[vars.category]
+description = "Issue category filter — 'p0', 'p1', 'p2', 'good-first-issue', 'all', or any kind/priority label name (default 'all')"
+required = false
+
+[[steps]]
+id = "setup"
+title = "Establish working state and verify the repo"
+description = """
+Resolve the root bead, confirm we are in a gastownhall/gascity checkout,
+verify gh auth, and record the run vars + output path. This is pure
+mechanism — no triage judgment happens here.
+
+```bash
+ROOT_ID=$(gc bd mol current --json | jq -r '.molecule_id')
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+    echo "Not in a git repository — cannot triage."
+    gc bd close "$ROOT_ID" --reason "not a git checkout"
+    exit 1
+}
+cd "$REPO_ROOT"
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+if [ "$REPO" != "gastownhall/gascity" ]; then
+    gc bd update "$ROOT_ID" --notes "status: blocked
+gate: wrong_repo
+detail: $REPO"
+    gc bd close "$ROOT_ID" --reason "wrong repo for contributor triage"
+    exit 0
+fi
+gh auth status >/dev/null 2>&1 || {
+    gc bd update "$ROOT_ID" --notes "status: blocked
+gate: gh_not_authed"
+    gc bd close "$ROOT_ID" --reason "gh not authenticated"
+    exit 1
+}
+```
+
+Resolve vars and the report path. The report is written to a city-scope
+path (via `$GC_CITY_PATH`) when available, so the caller can read it after
+the transient worker worktree is cleaned up; otherwise fall back to the
+worker-local relative path.
+
+```bash
+LIMIT="{{limit}}"
+[ -z "$LIMIT" ] && LIMIT=10
+CATEGORY="{{category}}"
+[ -z "$CATEGORY" ] && CATEGORY="all"
+if [ -n "${GC_CITY_PATH:-}" ]; then
+    REPORT_DIR="${GC_CITY_PATH}/.gc/contributing/find-work"
+else
+    REPORT_DIR=".gc/contributing/find-work"
+fi
+mkdir -p "$REPORT_DIR"
+# Resume-safe: reuse the report path already recorded in the root-bead notes;
+# only mint a fresh timestamp on the first run, so re-running setup after an
+# interruption does not orphan a partial report under a new path.
+REPORT_PATH=$(gc bd show "$ROOT_ID" --json | jq -r '.[0].notes // ""' | grep -m1 '^report_path:' | sed 's/^report_path: //')
+if [ -z "$REPORT_PATH" ]; then
+    REPORT_PATH="$REPORT_DIR/$(date +%Y%m%d-%H%M%S).md"
+fi
+gc bd update "$ROOT_ID" --notes "category: $CATEGORY
+limit: $LIMIT
+repo: $REPO
+report_path: $REPORT_PATH
+status: in_progress"
+```
+
+**Exit criteria:** In gastownhall/gascity repo root, gh auth ok, vars + report path recorded.
+"""
+
+[[steps]]
+id = "find-work"
+title = "Apply the find-work skill and write the work-queue report"
+needs = ["setup"]
+description = """
+Apply the pack's own `find-work` skill — read
+`${GC_PACK_DIR}/skills/find-work/SKILL.md` and follow it end to end. The
+skill is the single source of truth for the tier classification, the
+competing-PR detection, and the maintainer-decision gates. Do not restate
+those rules here; run them from the skill.
+
+Scope the run to this formula's vars: evaluate at most `LIMIT` candidates
+per tier, and filter the open-issue scan to `CATEGORY` (the skill's plain
+`gh` queries take a label/priority filter). Resolve the output path the
+setup step recorded (`report_path:` in the root-bead notes) and write the
+skill's ranked work-queue output there — do not assume `$REPORT_PATH` is
+still set; this step runs in its own shell.
+
+After writing the report, record the tier counts and the single
+recommended next pick in the root-bead notes so the caller can act without
+re-reading the file:
+
+```bash
+ROOT_ID=$(gc bd mol current --json | jq -r '.molecule_id')
+REPORT_PATH=$(gc bd show "$ROOT_ID" --json | jq -r '.[0].notes // ""' | grep -m1 '^report_path:' | sed 's/^report_path: //')
+gc bd update "$ROOT_ID" --notes "tier1: <n>
+tier2: <n>
+tier3: <n>
+tier4: <n>
+recommended: <issue number or none>
+status: report_written"
+```
+
+**Exit criteria:** Report written per the find-work skill; bead notes record tier counts + recommended pick.
+"""
+
+[[steps]]
+id = "finalize"
+title = "Surface the report path and exit"
+needs = ["find-work"]
+description = """
+Display the report path and recommended pick on stdout for the caller, then
+close the root bead. No further work happens — the caller reviews the
+report and decides which issue to dispatch via `mol-contributing-plan-implementation`.
+
+```bash
+ROOT_ID=$(gc bd mol current --json | jq -r '.molecule_id')
+NOTES=$(gc bd show "$ROOT_ID" --json | jq -r '.[0].notes // ""')
+REPORT_PATH=$(echo "$NOTES" | grep -m1 '^report_path:' | sed 's/^report_path: //')
+RECOMMENDED=$(echo "$NOTES" | grep -m1 '^recommended:' | sed 's/^recommended: //')
+cat <<EOF
+[contributing-find-work] Work-queue report ready
+[contributing-find-work]   Path: $REPORT_PATH
+[contributing-find-work]   Recommended next pick: #$RECOMMENDED
+[contributing-find-work] Next: review the report, then dispatch mol-contributing-plan-implementation --var issue=<N>.
+EOF
+gc bd update "$ROOT_ID" --notes "status: complete"
+gc bd close "$ROOT_ID" --reason "contributor triage report written: $REPORT_PATH"
+```
+
+**Exit criteria:** Report path printed, root bead closed with status:complete.
+"""
