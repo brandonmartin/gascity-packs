@@ -117,9 +117,15 @@ If context feels heavy (multi-hour session, large recent diffs, or you notice
 yourself taking shortcuts or summarizing prematurely), pour and assign the next
 wisp, burn the current wisp, then request a restart:
 ```bash
+# resolve-current-wisp: wisps are ephemeral, so `gc bd list` cannot see them;
+# resolving before the pour means the newest match is this iteration's wisp.
 CURRENT_WISP=${GC_BEAD_ID:-}
 if [ -z "$CURRENT_WISP" ]; then
-  CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=1 --json | jq -r '.[0].id // empty')
+  for id in "${GC_AGENT:-}" "${GC_SESSION_NAME:-}" "${GC_SESSION_ID:-}" "${GC_ALIAS:-}"; do
+    [ -z "$id" ] && continue
+    CURRENT_WISP=$(gc bd query --json 'ephemeral=true AND status=in_progress' 2>/dev/null | jq -r --arg id "$id" '[.[] | select((.assignee // "") == $id and .title == "mol-refinery-patrol")] | sort_by(.created_at) | last | .id // empty')
+    [ -n "$CURRENT_WISP" ] && break
+  done
 fi
 NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
 if [ -z "$NEXT" ]; then
@@ -240,9 +246,15 @@ gc bd update $WORK \
 5. Clean up temp branch: `git checkout {{target_branch}} && git branch -D temp`
 6. Pour next patrol iteration before burning:
 ```bash
+# resolve-current-wisp: wisps are ephemeral, so `gc bd list` cannot see them;
+# resolving before the pour means the newest match is this iteration's wisp.
 CURRENT_WISP=${GC_BEAD_ID:-}
 if [ -z "$CURRENT_WISP" ]; then
-  CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=1 --json | jq -r '.[0].id // empty')
+  for id in "${GC_AGENT:-}" "${GC_SESSION_NAME:-}" "${GC_SESSION_ID:-}" "${GC_ALIAS:-}"; do
+    [ -z "$id" ] && continue
+    CURRENT_WISP=$(gc bd query --json 'ephemeral=true AND status=in_progress' 2>/dev/null | jq -r --arg id "$id" '[.[] | select((.assignee // "") == $id and .title == "mol-refinery-patrol")] | sort_by(.created_at) | last | .id // empty')
+    [ -n "$CURRENT_WISP" ] && break
+  done
 fi
 NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
 if [ -z "$NEXT" ]; then
@@ -341,9 +353,15 @@ TARGET=$(gc bd show $WORK --json | jq -r '.[0].metadata.target // "{{target_bran
    - Clean up: `git checkout "$TARGET" && git branch -D temp`
    - Pour next patrol iteration before burning:
      ```bash
+     # resolve-current-wisp: wisps are ephemeral, so `gc bd list` cannot see them;
+     # resolving before the pour means the newest match is this iteration's wisp.
      CURRENT_WISP=${GC_BEAD_ID:-}
      if [ -z "$CURRENT_WISP" ]; then
-       CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=1 --json | jq -r '.[0].id // empty')
+       for id in "${GC_AGENT:-}" "${GC_SESSION_NAME:-}" "${GC_SESSION_ID:-}" "${GC_ALIAS:-}"; do
+         [ -z "$id" ] && continue
+         CURRENT_WISP=$(gc bd query --json 'ephemeral=true AND status=in_progress' 2>/dev/null | jq -r --arg id "$id" '[.[] | select((.assignee // "") == $id and .title == "mol-refinery-patrol")] | sort_by(.created_at) | last | .id // empty')
+         [ -n "$CURRENT_WISP" ] && break
+       done
      fi
      NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
      if [ -z "$NEXT" ]; then
@@ -486,9 +504,15 @@ Work bead: $WORK
 Existing PR: $EXISTING_PR
 Branch: $BRANCH
 Target: $TARGET"
+  # resolve-current-wisp: wisps are ephemeral, so `gc bd list` cannot see them;
+  # resolving before the pour means the newest match is this iteration's wisp.
   CURRENT_WISP=${GC_BEAD_ID:-}
   if [ -z "$CURRENT_WISP" ]; then
-    CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=1 --json | jq -r '.[0].id // empty')
+    for id in "${GC_AGENT:-}" "${GC_SESSION_NAME:-}" "${GC_SESSION_ID:-}" "${GC_ALIAS:-}"; do
+      [ -z "$id" ] && continue
+      CURRENT_WISP=$(gc bd query --json 'ephemeral=true AND status=in_progress' 2>/dev/null | jq -r --arg id "$id" '[.[] | select((.assignee // "") == $id and .title == "mol-refinery-patrol")] | sort_by(.created_at) | last | .id // empty')
+      [ -n "$CURRENT_WISP" ] && break
+    done
   fi
   if [ -z "$CURRENT_WISP" ]; then
     echo "Could not resolve current wisp; not burning."
@@ -1194,9 +1218,15 @@ If auto_land = "false": skip this entirely.
 
 **2. Resolve the current wisp, pour next iteration, then burn this wisp:**
 ```bash
+# resolve-current-wisp: wisps are ephemeral, so `gc bd list` cannot see them;
+# resolving before the pour means the newest match is this iteration's wisp.
 CURRENT_WISP=${GC_BEAD_ID:-}
 if [ -z "$CURRENT_WISP" ]; then
-  CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=1 --json | jq -r '.[0].id // empty')
+  for id in "${GC_AGENT:-}" "${GC_SESSION_NAME:-}" "${GC_SESSION_ID:-}" "${GC_ALIAS:-}"; do
+    [ -z "$id" ] && continue
+    CURRENT_WISP=$(gc bd query --json 'ephemeral=true AND status=in_progress' 2>/dev/null | jq -r --arg id "$id" '[.[] | select((.assignee // "") == $id and .title == "mol-refinery-patrol")] | sort_by(.created_at) | last | .id // empty')
+    [ -n "$CURRENT_WISP" ] && break
+  done
 fi
 NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{target_branch}} --var rig_name={{rig_name}} --var binding_prefix={{binding_prefix}} --json | jq -r '.new_epic_id // empty')
 if [ -z "$NEXT" ]; then

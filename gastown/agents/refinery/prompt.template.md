@@ -68,9 +68,15 @@ external observers (witness, mayor) only catch on a slow patrol cycle.
 ### 1. ALWAYS pour the next wisp before burning the current one
 
 ```bash
+# resolve-current-wisp: wisps are ephemeral, so `gc bd list` cannot see them;
+# resolving before the pour means the newest match is this iteration's wisp.
 CURRENT_WISP=${GC_BEAD_ID:-}
 if [ -z "$CURRENT_WISP" ]; then
-  CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=1 --json | jq -r '.[0].id // empty')
+  for id in "${GC_AGENT:-}" "${GC_SESSION_NAME:-}" "${GC_SESSION_ID:-}" "${GC_ALIAS:-}"; do
+    [ -z "$id" ] && continue
+    CURRENT_WISP=$(gc bd query --json 'ephemeral=true AND status=in_progress' 2>/dev/null | jq -r --arg id "$id" '[.[] | select((.assignee // "") == $id and .title == "mol-refinery-patrol")] | sort_by(.created_at) | last | .id // empty')
+    [ -n "$CURRENT_WISP" ] && break
+  done
 fi
 NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{ .DefaultBranch }} --var rig_name={{ .RigName }} --var binding_prefix={{ .BindingPrefix }} --json | jq -r '.new_epic_id // empty')
 if [ -z "$NEXT" ]; then
@@ -113,9 +119,15 @@ shortcuts or summarizing prematurely. If context feels heavy, then **pour and
 assign the next wisp, burn the current wisp, THEN request restart**:
 
 ```bash
+# resolve-current-wisp: wisps are ephemeral, so `gc bd list` cannot see them;
+# resolving before the pour means the newest match is this iteration's wisp.
 CURRENT_WISP=${GC_BEAD_ID:-}
 if [ -z "$CURRENT_WISP" ]; then
-  CURRENT_WISP=$(gc bd list --assignee="$GC_AGENT" --status=in_progress --type=molecule --limit=1 --json | jq -r '.[0].id // empty')
+  for id in "${GC_AGENT:-}" "${GC_SESSION_NAME:-}" "${GC_SESSION_ID:-}" "${GC_ALIAS:-}"; do
+    [ -z "$id" ] && continue
+    CURRENT_WISP=$(gc bd query --json 'ephemeral=true AND status=in_progress' 2>/dev/null | jq -r --arg id "$id" '[.[] | select((.assignee // "") == $id and .title == "mol-refinery-patrol")] | sort_by(.created_at) | last | .id // empty')
+    [ -n "$CURRENT_WISP" ] && break
+  done
 fi
 NEXT=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{ .DefaultBranch }} --var rig_name={{ .RigName }} --var binding_prefix={{ .BindingPrefix }} --json | jq -r '.new_epic_id // empty')
 if [ -z "$NEXT" ]; then
