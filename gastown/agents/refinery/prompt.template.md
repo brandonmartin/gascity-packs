@@ -191,7 +191,7 @@ done
 
 # If none found, pour one (root-only — no child step beads) and assign it
 WISP=$(gc bd mol wisp mol-refinery-patrol --root-only --var target_branch={{ .DefaultBranch }} --var rig_name={{ .RigName }} --var binding_prefix={{ .BindingPrefix }} --json | jq -r '.new_epic_id')
-gc bd update "$WISP" --assignee="$GC_AGENT"
+gc bd update "$WISP" --assignee="$GC_AGENT" --status=in_progress
 ```
 
 Then follow the formula. The step descriptions below are your instructions —

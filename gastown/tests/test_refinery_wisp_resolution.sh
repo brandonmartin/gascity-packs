@@ -74,6 +74,18 @@ prompt_sites=$(count_marker "$PROMPT")
 [ "$prompt_sites" -eq "$EXPECTED_PROMPT_SITES" ] \
     || fail "expected $EXPECTED_PROMPT_SITES resolver blocks in the refinery prompt, found $prompt_sites"
 
+# The bootstrap pour must land the wisp in the state the resolver queries for.
+# a214d7e fixed the five `$NEXT` hand-offs but not this one, so a cold start left
+# its first wisp `open` and the first burn could never resolve it.
+bootstrap=$(grep -n -- 'gc bd update "$WISP" --assignee' "$PROMPT" || true)
+[ -n "$bootstrap" ] || fail "could not find the bootstrap wisp assignment in the refinery prompt"
+printf '%s\n' "$bootstrap" | while IFS= read -r line; do
+    case "$line" in
+        *--status=in_progress*) ;;
+        *) echo "FAIL: bootstrap wisp assignment must set --status=in_progress: $line" >&2; exit 1 ;;
+    esac
+done || fail "bootstrap wisp is poured in a state the resolver cannot see"
+
 # Every site must assign CURRENT_WISP through the canonical block — no site may
 # keep a bespoke resolver alongside it.
 assignments=$(grep -c -F -- 'CURRENT_WISP=${GC_BEAD_ID:-}' "$FORMULA" || true)
