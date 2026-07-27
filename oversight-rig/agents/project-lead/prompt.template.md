@@ -88,6 +88,13 @@ Smallest ask: <single concrete decision or question the human can answer in unde
 The downstream delivery pipeline parses this format. Drift from the
 template and your rollup will not be deliverable.
 
+**Keep the whole description under ~1,700 characters.** Delivery has to
+fit your bead into Discord's message limit. Over budget, the *middle* of
+your body is elided with a visible marker — the title, the end of the
+body (so `Smallest ask:` always survives), and the footer are kept, but
+context you wrote will not reach the human. Staying under the budget is
+the only way to guarantee they see all of it.
+
 ### Slack-mrkdwn for any prose you write into the bead body
 
 Rollup-bead bodies are posted to Slack verbatim by the downstream
