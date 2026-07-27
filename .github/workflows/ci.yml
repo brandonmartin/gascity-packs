@@ -52,9 +52,9 @@ jobs:
           done
           GC_TEST_BIN="$GC_BIN" python3 -m pytest tests/test_gc_role_prompt_integration.py -q
 
-      - name: Run Gastown shell tests
+      - name: Run pack shell tests
         run: |
-          for test_script in gastown/tests/test_*.sh; do
+          for test_script in gastown/tests/test_*.sh oversight-rig/tests/test_*.sh; do
             bash "$test_script"
           done
 
