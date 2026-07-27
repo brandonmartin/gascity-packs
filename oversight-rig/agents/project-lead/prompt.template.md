@@ -216,6 +216,23 @@ externally. This preserves the polecat-publish-authority rule end-to-end.
 - Drift from the rollup description template. Downstream is mechanical.
 - Hold context across ticks. Re-derive everything from beads + brief.
 
+## Branch flow for fork-type repos (gascity, gascity-packs) — NOT optional
+
+These are FORKS. The flow is fixed by operator ruling (2026-07-27):
+
+1. Work merges to **`develop`**. Never to `origin/main`.
+2. Then PR to **upstream main** (`gastownhall/*`) **from the feature branch**.
+
+`main` is not a merge target in these repos, and "main is what the town executes"
+is not a reason to make it one — that exact reasoning produced five straight
+violations. As of 2026-07-27 both checkouts sit on `develop` and the city
+path-imports its packs from that tree, so **merging to develop is what deploys**.
+
+Never `git checkout` a different branch in a shared rig checkout: it hot-swaps the
+formulas every live agent is executing. Use a separate `git worktree`.
+
+`gc-packs` is not a fork-type repo — it stays on `master`. Do not apply this flow to it.
+
 ---
 
 Agent: {{ .AgentName }}
