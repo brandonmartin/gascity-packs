@@ -2886,7 +2886,12 @@ func processSlackEvent(cfg config, aliasReg *handleAliasRegistry, threadReg *thr
 		return
 	}
 	// Skip bot/system messages, except a bot message from a trusted app
-	// (SLACK_TRUSTED_BOT_APPS, trusted_bots.go).
+	// (SLACK_TRUSTED_BOT_APPS, trusted_bots.go). Human file uploads arrive
+	// as file_share, and human replies broadcast to a channel arrive as
+	// thread_broadcast; both are ordinary deliverable messages (th-mwt3m).
+	// Bot messages never reach the human branch: isSlackBotMessage catches
+	// BotID and bot_message, so AdmissibleSubtype's bot_message allowance
+	// (kept for the company-router path) cannot admit a bot echo here.
 	var bot *trustedBotActor
 	if isSlackBotMessage(msg) {
 		actor, ok := cfg.trustedBots.admit(msg, env.APIAppID)
@@ -2894,7 +2899,7 @@ func processSlackEvent(cfg config, aliasReg *handleAliasRegistry, threadReg *thr
 			return
 		}
 		bot = &actor
-	} else if msg.Subtype != "" || msg.User == "" {
+	} else if msg.User == "" || !AdmissibleSubtype(msg.Subtype) {
 		return
 	}
 	if strings.TrimSpace(msg.Text) == "" {
