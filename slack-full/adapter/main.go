@@ -77,6 +77,14 @@
 //     agent apps, and for OAuth/interactivity.
 //     A value without the xapp- prefix is
 //     rejected at startup.
+//   - SLACK_TRUSTED_BOT_APPS  Slack app ids (A..., comma- or
+//     space-separated) whose bot messages reach
+//     bound sessions like a human's, with
+//     is_bot=true (trusted_bots.go). Each
+//     message's bot_id is verified via bots.info
+//     (users:read). The adapter's own app is
+//     never admitted. Unset: every bot message
+//     is dropped, as before.
 //
 // Optional override (sane default; set to override):
 //
@@ -554,6 +562,13 @@ type config struct {
 	// (inbound_retry.go). The zero value is defaultInboundRetry; tests set
 	// it to inject a recording sleep.
 	inboundRetry inboundRetryPolicy
+	// trustedBotApps is SLACK_TRUSTED_BOT_APPS: the Slack app ids whose bot
+	// messages the legacy inbound path admits (trusted_bots.go). Empty keeps
+	// every bot message dropped.
+	trustedBotApps []string
+	// trustedBots is the gate built from trustedBotApps; main() wires it.
+	// Nil (unit tests that build a config by hand) admits no bot.
+	trustedBots *trustedBotGate
 }
 
 func loadConfig() (config, error) {
@@ -664,6 +679,7 @@ func loadConfigFromEnv(getenv func(string) string) (config, error) {
 	cfg.companyAgentAppsPath = envOrFn("SLACK_COMPANY_AGENT_APPS_PATH", defaultCompanyAgentAppsPath)
 	cfg.companyIngressDir = envOrFn("SLACK_COMPANY_INGRESS_DIR", defaultCompanyIngressDir)
 	cfg.companySelfBotUserID = getenv("SLACK_SWITCHBOARD_BOT_USER_ID")
+	cfg.trustedBotApps = parseTrustedBotApps(getenv("SLACK_TRUSTED_BOT_APPS"), cfg.slackAppID)
 	if raw := getenv("SLACK_COMPANY_CITY_APIS"); raw != "" {
 		cfg.companyCityAPIs = make(map[string]string)
 		for _, pair := range strings.Split(raw, ",") {
@@ -1127,6 +1143,7 @@ type slackMessageEvent struct {
 	Subtype     string          `json:"subtype,omitempty"`
 	User        string          `json:"user,omitempty"`
 	BotID       string          `json:"bot_id,omitempty"`
+	Username    string          `json:"username,omitempty"`
 	Text        string          `json:"text,omitempty"`
 	Channel     string          `json:"channel,omitempty"`
 	TS          string          `json:"ts,omitempty"`
@@ -1159,6 +1176,13 @@ func main() {
 	// event_id arriving over both transports (or redelivered) is dispatched
 	// once. Wired before any handler closes over cfg.
 	cfg.eventDedup = newInboundEventDedup(inboundEventDedupTTL)
+	// Bot messages from SLACK_TRUSTED_BOT_APPS reach bound sessions; every
+	// other bot message is dropped and logged once per app per hour.
+	cfg.trustedBots = newTrustedBotGate(cfg.trustedBotApps, cfg.slackAppID, cfg.companySelfBotUserID, newBotInfoResolver(cfg.slackBotToken))
+	if len(cfg.trustedBotApps) > 0 {
+		log.Printf("trusted bot apps: %s", strings.Join(cfg.trustedBotApps, ","))
+		go checkTrustedBotScope(&http.Client{Timeout: 10 * time.Second}, cfg.slackBotToken)
+	}
 	internalDescr := cfg.internalListen
 	if cfg.serviceSocket != "" {
 		internalDescr = "uds:" + cfg.serviceSocket
@@ -2861,8 +2885,16 @@ func processSlackEvent(cfg config, aliasReg *handleAliasRegistry, threadReg *thr
 	if msg.Type != "message" && msg.Type != "app_mention" {
 		return
 	}
-	// Skip bot/system messages.
-	if msg.BotID != "" || msg.Subtype != "" || msg.User == "" {
+	// Skip bot/system messages, except a bot message from a trusted app
+	// (SLACK_TRUSTED_BOT_APPS, trusted_bots.go).
+	var bot *trustedBotActor
+	if isSlackBotMessage(msg) {
+		actor, ok := cfg.trustedBots.admit(msg, env.APIAppID)
+		if !ok {
+			return
+		}
+		bot = &actor
+	} else if msg.Subtype != "" || msg.User == "" {
 		return
 	}
 	if strings.TrimSpace(msg.Text) == "" {
@@ -2876,8 +2908,9 @@ func processSlackEvent(cfg config, aliasReg *handleAliasRegistry, threadReg *thr
 	// falling through to postInbound or the single-`@` alias dispatch:
 	// the launcher flow is operator-driven control plane, not message
 	// transport. The single-`@` parser below only runs on miss, so the
-	// existing alias dispatch behavior is unchanged.
-	if cfg.handlePrefix != "" && threadReg != nil {
+	// existing alias dispatch behavior is unchanged. A trusted bot never
+	// drives the launcher: spawning sessions stays a human action.
+	if bot == nil && cfg.handlePrefix != "" && threadReg != nil {
 		if h, remainder, ok := parseDoubleHandlePrefix(msg.Text, cfg.handlePrefix); ok {
 			handleDoubleHandleDispatch(cfg, aliasReg, threadReg, roomLaunchReg, msg, env.TeamID, h, remainder)
 			return
@@ -3007,12 +3040,17 @@ func processSlackEvent(cfg config, aliasReg *handleAliasRegistry, threadReg *thr
 		DedupKey:         "slack-" + msg.TS,
 		ReceivedAt:       time.Now().UTC(),
 	}
+	botTag := ""
+	if bot != nil {
+		inbound.Actor = externalActor{ID: bot.ID, DisplayName: bot.DisplayName, IsBot: true}
+		botTag = fmt.Sprintf(" bot=%q app=%s", bot.DisplayName, bot.AppID)
+	}
 	if err := postInbound(cfg, inbound); err != nil {
 		log.Printf("inbound POST failed: chan=%s ts=%s: %v", msg.Channel, msg.TS, err)
 		return
 	}
-	log.Printf("inbound: chan=%s user=%s ts=%s thread=%s target=%q files=%d text=%dch",
-		msg.Channel, msg.User, msg.TS, msg.ThreadTS, target, len(attachments), len(text))
+	log.Printf("inbound: chan=%s user=%s ts=%s thread=%s target=%q files=%d text=%dch%s",
+		msg.Channel, inbound.Actor.ID, msg.TS, msg.ThreadTS, target, len(attachments), len(text), botTag)
 
 	// "Eyes" reaction signals to the human that an agent was explicitly
 	// addressed (via `@handle:` prefix or a Slack User Group mention

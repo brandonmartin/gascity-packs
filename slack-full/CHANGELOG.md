@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Trusted bot apps.** `SLACK_TRUSTED_BOT_APPS` lists Slack app ids whose
+  bot messages the legacy inbound path admits like a human message, with
+  the actor marked `is_bot` and named from `bot_profile.name`. Each
+  message's `bot_id` must resolve through `bots.info` to a listed app, and
+  the event's declared app ids must agree, so the bot token needs
+  `users:read` (a startup warning says when it is missing). The adapter's
+  own app is never admitted. Other subtypes stay dropped. Unset keeps
+  today's behavior, except that dropped bot messages are now logged (once
+  per app per hour) instead of vanishing silently.
+
 - **Socket Mode inbound.** With `SLACK_APP_TOKEN` (an `xapp-` app-level
   token with `connections:write`) set, the adapter opens a Socket Mode
   WebSocket and takes events over it, so inbound no longer depends on the
