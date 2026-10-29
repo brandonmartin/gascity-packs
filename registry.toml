@@ -133,10 +133,10 @@ schema = 1
 
   [[pack.release]]
     version = "0.1.12"
-    ref = "main"
-    commit = "5bf643ca55bd20f080994cc31414ee4596015a0c"
-    hash = "sha256:b2a8d50cdfba0c39c834c1e7be3d099b8bd0e9e51c47a292d539b6aa20c7e750"
-    description = "Release gastown from main for the next Gas City minor: every shipped bead command goes through gc (split-store cities reach graph steps and patrol wisps), plus the 0.1.11 maintenance fixes and the patrol, propulsion and drain fixes on main since 0.1.10."
+    ref = "release/gastown-0.1.11"
+    commit = "fb4d1fa0b203446858f73bec1273cc8a53edea79"
+    hash = "sha256:eb58fdd7506582a9d406d2a8643ff33d321ad131196f7f3463fea30d8e4b9109"
+    description = "Maintenance release for Gas City 1.5.x, cut from 0.1.11: every shipped gastown bead command goes through gc bd (backport of 9b4df3e), so split-store cities reach graph steps from the polecat and witness prompts, the polecat-work and witness-patrol formulas, the review check scripts and the churn watcher; the refinery duplicate-bug check uses a bd list flag that exists."
 
 [[pack]]
   name = "cass"
