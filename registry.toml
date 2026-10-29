@@ -134,9 +134,9 @@ schema = 1
   [[pack.release]]
     version = "0.1.12"
     ref = "release/gastown-0.1.11"
-    commit = "fb4d1fa0b203446858f73bec1273cc8a53edea79"
-    hash = "sha256:eb58fdd7506582a9d406d2a8643ff33d321ad131196f7f3463fea30d8e4b9109"
-    description = "Maintenance release for Gas City 1.5.x, cut from 0.1.11: every shipped gastown bead command goes through gc bd (backport of 9b4df3e), so split-store cities reach graph steps from the polecat and witness prompts, the polecat-work and witness-patrol formulas, the review check scripts and the churn watcher; the refinery duplicate-bug check filters with --title-contains, a flag that exists."
+    commit = "cb6a612882b8402569c495c90ab75bb257a51bdc"
+    hash = "sha256:9d45214f8e4d997ff84b9daf0e92917141fddda03be132d28382f7ea0c6252d4"
+    description = "Maintenance release for Gas City 1.5.x, cut from 0.1.11: every shipped gastown bead command goes through gc bd (backport of 9b4df3e), so split-store cities reach graph steps from the polecat and witness prompts, the polecat-work and witness-patrol formulas, the review check scripts (which now read molecules through a federated gc ready union) and the churn watcher; the refinery duplicate-bug check filters with --title-contains, a flag that exists."
 
 [[pack]]
   name = "cass"
