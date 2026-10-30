@@ -904,6 +904,10 @@ type externalInboundMessage struct {
 	Attachments       []externalAttachment `json:"attachments,omitempty"`
 	DedupKey          string               `json:"dedup_key,omitempty"`
 	ReceivedAt        time.Time            `json:"received_at"`
+	// Attribution is the composer evidence from the Slack event
+	// (attribution.go). Omitted when nil, so a gc older than fdce674d6,
+	// which rejects unknown fields, sees the old body.
+	Attribution map[string]string `json:"attribution,omitempty"`
 }
 
 type adapterCapabilities struct {
@@ -3044,6 +3048,7 @@ func processSlackEvent(cfg config, aliasReg *handleAliasRegistry, threadReg *thr
 		Attachments:      attachments,
 		DedupKey:         "slack-" + msg.TS,
 		ReceivedAt:       time.Now().UTC(),
+		Attribution:      slackAttribution(msg),
 	}
 	botTag := ""
 	if bot != nil {
@@ -3054,8 +3059,9 @@ func processSlackEvent(cfg config, aliasReg *handleAliasRegistry, threadReg *thr
 		log.Printf("inbound POST failed: chan=%s ts=%s: %v", msg.Channel, msg.TS, err)
 		return
 	}
-	log.Printf("inbound: chan=%s user=%s ts=%s thread=%s target=%q files=%d text=%dch%s",
-		msg.Channel, inbound.Actor.ID, msg.TS, msg.ThreadTS, target, len(attachments), len(text), botTag)
+	log.Printf("inbound: chan=%s user=%s ts=%s thread=%s target=%q files=%d text=%dch%s%s",
+		msg.Channel, inbound.Actor.ID, msg.TS, msg.ThreadTS, target, len(attachments), len(text), botTag,
+		attributionLogTag(inbound.Attribution))
 
 	// "Eyes" reaction signals to the human that an agent was explicitly
 	// addressed (via `@handle:` prefix or a Slack User Group mention
@@ -4524,7 +4530,23 @@ func handleIdentityDelete(reg *identityRegistry) http.HandlerFunc {
 // transport error is retried under cfg.inboundRetry (inbound_retry.go);
 // every attempt sends the same body, so gc's dedup on provider_message_id
 // keeps a retried message to one transcript entry.
+//
+// A gc older than fdce674d6 refuses the attribution field with a 4xx. The
+// message is then sent once more without it rather than dropped: the
+// attribution is evidence, the message is the delivery.
 func postInbound(cfg config, msg externalInboundMessage) error {
+	err := postInboundBody(cfg, msg)
+	if err != nil && msg.Attribution != nil && attributionRejected(err) {
+		log.Printf("inbound POST: gc refused the attribution field (gc older than fdce674d6?); resending without it: msg=%s/%s",
+			msg.Conversation.ConversationID, msg.ProviderMessageID)
+		msg.Attribution = nil
+		return postInboundBody(cfg, msg)
+	}
+	return err
+}
+
+// postInboundBody is one postInbound delivery of msg, with retries.
+func postInboundBody(cfg config, msg externalInboundMessage) error {
 	body, _ := json.Marshal(map[string]any{
 		"message": msg,
 	})
