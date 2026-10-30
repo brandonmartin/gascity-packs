@@ -4531,14 +4531,22 @@ func handleIdentityDelete(reg *identityRegistry) http.HandlerFunc {
 // every attempt sends the same body, so gc's dedup on provider_message_id
 // keeps a retried message to one transcript entry.
 //
-// A gc older than fdce674d6 refuses the attribution field with a 4xx. The
-// message is then sent once more without it rather than dropped: the
-// attribution is evidence, the message is the delivery.
+// An old gc that does not know message.attribution answers 422 or 400 naming
+// the field. The first such answer latches for this process: that message is
+// sent once more without the field, one log line says attribution is disabled
+// until restart, and later messages omit it. The attribution is evidence; the
+// message is the delivery. Any other 4xx is the message's own fault and is
+// not resent.
 func postInbound(cfg config, msg externalInboundMessage) error {
+	if attributionDisabled.Load() {
+		msg.Attribution = nil
+	}
 	err := postInboundBody(cfg, msg)
 	if err != nil && msg.Attribution != nil && attributionRejected(err) {
-		log.Printf("inbound POST: gc refused the attribution field (gc older than fdce674d6?); resending without it: msg=%s/%s",
-			msg.Conversation.ConversationID, msg.ProviderMessageID)
+		if attributionDisabled.CompareAndSwap(false, true) {
+			log.Printf("inbound POST: gc refused the attribution field; attribution disabled until restart: msg=%s/%s",
+				msg.Conversation.ConversationID, msg.ProviderMessageID)
+		}
 		msg.Attribution = nil
 		return postInboundBody(cfg, msg)
 	}

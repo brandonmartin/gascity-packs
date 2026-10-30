@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,14 @@ import (
 	"sync"
 	"testing"
 )
+
+// resetAttributionLatch clears the process-lifetime fallback so tests do not
+// leak a tripped latch into one another.
+func resetAttributionLatch(t *testing.T) {
+	t.Helper()
+	attributionDisabled.Store(false)
+	t.Cleanup(func() { attributionDisabled.Store(false) })
+}
 
 // A user message an app posted under the user's id, with the app's
 // "Sent using" footer in a context block.
@@ -125,6 +134,7 @@ func (o *oldGCInbound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // TestPostInboundOldGCDropsAttributionOnce: an old gc refuses the field; the
 // message is resent once without it and delivered, with a log line.
 func TestPostInboundOldGCDropsAttributionOnce(t *testing.T) {
+	resetAttributionLatch(t)
 	o := &oldGCInbound{}
 	srv := httptest.NewServer(o)
 	t.Cleanup(srv.Close)
@@ -149,11 +159,155 @@ func TestPostInboundOldGCDropsAttributionOnce(t *testing.T) {
 	if !strings.Contains(logs, "gc refused the attribution field") {
 		t.Errorf("fallback not logged:\n%s", logs)
 	}
+	if !strings.Contains(logs, "attribution disabled until restart") {
+		t.Errorf("latch not logged:\n%s", logs)
+	}
+	if !attributionDisabled.Load() {
+		t.Error("old-gc refusal did not latch attribution off")
+	}
+}
+
+// TestPostInboundOldGCLatchesAttribution: N messages against an old gc produce
+// exactly one body that carries attribution (the first attempt). That message
+// is resent without it, and every later message is plain. The disable log
+// fires once.
+func TestPostInboundOldGCLatchesAttribution(t *testing.T) {
+	resetAttributionLatch(t)
+	o := &oldGCInbound{}
+	srv := httptest.NewServer(o)
+	t.Cleanup(srv.Close)
+	cfg := config{gcAPIBase: srv.URL, cityName: "test-city"}
+	cfg.inboundRetry, _ = recordSleeps(inboundRetryPolicy{})
+
+	read, restore := captureLog(t)
+	const n = 4
+	for i := 0; i < n; i++ {
+		msg := testInboundMsg()
+		msg.ProviderMessageID = fmt.Sprintf("1791999999.00010%d", i)
+		msg.Attribution = map[string]string{"attribution_version": "1", "user_id": "U1"}
+		if err := postInbound(cfg, msg); err != nil {
+			restore()
+			t.Fatalf("message %d: %v", i, err)
+		}
+	}
+	logs := read()
+	restore()
+
+	with := 0
+	for _, body := range o.bodies {
+		if strings.Contains(body, `"attribution"`) {
+			with++
+		}
+	}
+	if with != 1 {
+		t.Fatalf("attribution bodies = %d, want 1 across %d messages (%d bodies)", with, n, len(o.bodies))
+	}
+	if got, want := len(o.bodies), n+1; got != want {
+		t.Fatalf("bodies = %d, want %d (one resend plus one post per message)", got, want)
+	}
+	if got := strings.Count(logs, "attribution disabled until restart"); got != 1 {
+		t.Errorf("disable log count = %d, want 1:\n%s", got, logs)
+	}
+}
+
+// TestPostInboundNewGCKeepsAttribution: a gc that accepts the field keeps it
+// on every message, and the latch stays off.
+func TestPostInboundNewGCKeepsAttribution(t *testing.T) {
+	resetAttributionLatch(t)
+	var mu sync.Mutex
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := config{gcAPIBase: srv.URL, cityName: "test-city"}
+	cfg.inboundRetry, _ = recordSleeps(inboundRetryPolicy{})
+
+	const n = 3
+	for i := 0; i < n; i++ {
+		msg := testInboundMsg()
+		msg.ProviderMessageID = fmt.Sprintf("1791999999.00020%d", i)
+		msg.Attribution = map[string]string{"attribution_version": "1", "user_id": "U1"}
+		if err := postInbound(cfg, msg); err != nil {
+			t.Fatalf("message %d: %v", i, err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != n {
+		t.Fatalf("bodies = %d, want %d", len(bodies), n)
+	}
+	for i, body := range bodies {
+		if !strings.Contains(body, `"attribution"`) {
+			t.Errorf("message %d omitted attribution: %s", i, body)
+		}
+	}
+	if attributionDisabled.Load() {
+		t.Error("accepting gc latched attribution off")
+	}
+}
+
+// TestPostInboundAttributionLatchConcurrent: overlapping refusals log the
+// disable line once and still deliver every message. The race detector
+// covers the atomic latch.
+func TestPostInboundAttributionLatchConcurrent(t *testing.T) {
+	resetAttributionLatch(t)
+	o := &oldGCInbound{}
+	srv := httptest.NewServer(o)
+	t.Cleanup(srv.Close)
+	cfg := config{gcAPIBase: srv.URL, cityName: "test-city"}
+	cfg.inboundRetry, _ = recordSleeps(inboundRetryPolicy{})
+
+	read, restore := captureLog(t)
+	const n = 8
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			msg := testInboundMsg()
+			msg.ProviderMessageID = fmt.Sprintf("1791999999.00030%d", i)
+			msg.Attribution = map[string]string{"attribution_version": "1", "user_id": "U1"}
+			if err := postInbound(cfg, msg); err != nil {
+				t.Errorf("message %d: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	logs := read()
+	restore()
+
+	if got := strings.Count(logs, "attribution disabled until restart"); got != 1 {
+		t.Errorf("disable log count = %d, want 1:\n%s", got, logs)
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delivered := map[string]bool{}
+	for _, body := range o.bodies {
+		var req struct {
+			Message externalInboundMessage `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(body), &req); err != nil {
+			t.Errorf("body: %v", err)
+			continue
+		}
+		if !strings.Contains(body, `"attribution"`) {
+			delivered[req.Message.ProviderMessageID] = true
+		}
+	}
+	if len(delivered) != n {
+		t.Errorf("plain deliveries = %d, want %d", len(delivered), n)
+	}
 }
 
 // TestPostInboundOther4xxNotResent: a 4xx that does not name the field is
 // the message's own fault, so it is neither retried nor resent.
 func TestPostInboundOther4xxNotResent(t *testing.T) {
+	resetAttributionLatch(t)
 	f := &fakeInbound{failures: []int{http.StatusUnprocessableEntity}}
 	cfg := newFakeInbound(t, f)
 	cfg.inboundRetry, _ = recordSleeps(inboundRetryPolicy{})
@@ -170,6 +324,7 @@ func TestPostInboundOther4xxNotResent(t *testing.T) {
 // TestPostInboundNoAttributionKeepsOldBody: absent attribution is not on
 // the wire at all, so the body an old gc accepts is unchanged.
 func TestPostInboundNoAttributionKeepsOldBody(t *testing.T) {
+	resetAttributionLatch(t)
 	f := &fakeInbound{}
 	cfg := newFakeInbound(t, f)
 	if err := postInbound(cfg, testInboundMsg()); err != nil {
@@ -184,6 +339,7 @@ func TestPostInboundNoAttributionKeepsOldBody(t *testing.T) {
 // the inbound body carries the event's composer evidence and the inbound:
 // log line names it.
 func TestProcessSlackEventCarriesAttribution(t *testing.T) {
+	resetAttributionLatch(t)
 	var mu sync.Mutex
 	var got []map[string]string
 	gcStub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

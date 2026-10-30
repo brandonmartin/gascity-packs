@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 )
 
 // Composer attribution on the inbound payload (gc-packs gp-599fr).
@@ -115,8 +116,13 @@ func attributionLogTag(attr map[string]string) string {
 	return b.String()
 }
 
+// attributionDisabled latches for the life of the process after the first
+// old-gc refusal of message.attribution. While set, postInbound omits the
+// field so later messages do not pay another 422. It clears only on restart.
+var attributionDisabled atomic.Bool
+
 // attributionRejected reports whether gc refused the request because it does
-// not know the attribution field: a gc older than fdce674d6 validates the
+// not know the attribution field: a gc that predates the field validates the
 // inbound body with additionalProperties=false and answers 422 (or 400)
 // naming the field. Any other 4xx is the message's own fault.
 func attributionRejected(err error) bool {
